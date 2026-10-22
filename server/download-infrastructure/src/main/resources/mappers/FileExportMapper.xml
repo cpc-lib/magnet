@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.magnetplatform.infrastructure.mapper.FileExportMapper">
+
+    <resultMap id="fileExport" type="com.magnetplatform.domain.export.FileExport">
+        <constructor>
+            <arg column="id" javaType="java.util.UUID"/>
+            <arg column="task_id" javaType="java.util.UUID"/>
+            <arg column="user_id" javaType="java.util.UUID"/>
+            <arg column="resource_id" javaType="java.util.UUID"/>
+            <arg column="file_index" javaType="java.lang.Integer"/>
+            <arg column="relative_path" javaType="java.lang.String"/>
+            <arg column="target_path" javaType="java.lang.String"/>
+            <arg column="state" javaType="com.magnetplatform.domain.export.ExportState"/>
+            <arg column="bytes" javaType="java.lang.Long"/>
+            <arg column="error_code" javaType="java.lang.String"/>
+            <arg column="error_message" javaType="java.lang.String"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="columns">id, task_id, user_id, resource_id, file_index, relative_path, target_path,
+        state, bytes, error_code, error_message, created_at, updated_at</sql>
+
+    <insert id="insert" parameterType="com.magnetplatform.domain.export.FileExport">
+        INSERT INTO file_export (<include refid="columns"/>)
+        VALUES (#{id}, #{taskId}, #{userId}, #{resourceId}, #{fileIndex}, #{relativePath}, #{targetPath},
+                #{state}, #{bytes}, #{errorCode}, #{errorMessage}, #{createdAt}, #{updatedAt})
+    </insert>
+
+    <select id="findByTask" resultMap="fileExport">
+        SELECT <include refid="columns"/> FROM file_export
+        WHERE task_id = #{taskId}
+        ORDER BY file_index
+    </select>
+
+    <select id="findOwned" resultMap="fileExport">
+        SELECT <include refid="columns"/> FROM file_export
+        WHERE user_id = #{userId} AND task_id = #{taskId}
+        ORDER BY file_index
+    </select>
+
+    <update id="updateState">
+        UPDATE file_export
+        SET state = #{state}, bytes = #{bytes}, error_code = #{errorCode},
+            error_message = #{errorMessage}, updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteOwnedByTask">
+        DELETE FROM file_export WHERE user_id = #{userId} AND task_id = #{taskId}
+    </delete>
+</mapper>

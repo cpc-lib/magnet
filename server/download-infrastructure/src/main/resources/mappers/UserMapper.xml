@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.magnetplatform.infrastructure.mapper.UserMapper">
+
+    <resultMap id="user" type="com.magnetplatform.domain.user.AppUser">
+        <constructor>
+            <arg column="id" javaType="java.util.UUID"/>
+            <arg column="username" javaType="java.lang.String"/>
+            <arg column="password_hash" javaType="java.lang.String"/>
+            <arg column="role" javaType="com.magnetplatform.domain.user.Role"/>
+            <arg column="status" javaType="java.lang.String"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="columns">id, username, password_hash, role, status, created_at</sql>
+
+    <select id="findById" resultMap="user">
+        SELECT <include refid="columns"/> FROM app_user WHERE id = #{id}
+    </select>
+
+    <select id="findByUsername" resultMap="user">
+        SELECT <include refid="columns"/> FROM app_user WHERE username = #{username}
+    </select>
+
+    <insert id="insert" parameterType="com.magnetplatform.domain.user.AppUser">
+        INSERT INTO app_user (<include refid="columns"/>)
+        VALUES (#{id}, #{username}, #{passwordHash}, #{role}, #{status}, #{createdAt})
+    </insert>
+
+    <select id="count" resultType="long">
+        SELECT COUNT(*) FROM app_user
+    </select>
+</mapper>

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.magnetplatform.infrastructure.mapper.TaskEventMapper">
+
+    <resultMap id="event" type="com.magnetplatform.domain.task.TaskEvent">
+        <constructor>
+            <arg column="id" javaType="java.util.UUID"/>
+            <arg column="task_id" javaType="java.util.UUID"/>
+            <arg column="seq" javaType="long"/>
+            <arg column="event_type" javaType="java.lang.String"/>
+            <arg column="payload_json" javaType="java.lang.String"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.magnetplatform.domain.task.TaskEvent">
+        INSERT INTO task_event (id, task_id, seq, event_type, payload_json, created_at)
+        VALUES (#{id}, #{taskId}, #{seq}, #{eventType}, #{payloadJson}, #{createdAt})
+    </insert>
+
+    <select id="maxSeq" resultType="long">
+        SELECT COALESCE(MAX(seq), 0) FROM task_event WHERE task_id = #{taskId}
+    </select>
+
+    <select id="findAfter" resultMap="event">
+        SELECT id, task_id, seq, event_type, payload_json, created_at
+        FROM task_event
+        WHERE task_id = #{taskId} AND seq &gt; #{afterSeq}
+        ORDER BY seq ASC
+        LIMIT #{limit}
+    </select>
+</mapper>

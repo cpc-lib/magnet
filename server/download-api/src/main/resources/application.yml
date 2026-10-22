@@ -1,0 +1,51 @@
+server:
+  port: ${PORT:8080}
+
+spring:
+  application:
+    name: magnet-platform
+  # 启动时读取工作目录下的 .env（KEY=VALUE 即 properties 格式）；文件不存在也不报错，环境变量优先级更高
+  config:
+    import: optional:file:./.env[.properties]
+  # 本项目用无状态 JWT 认证，无需 Spring Boot 自动生成的内存用户（消除 generated security password 警告）
+  autoconfigure:
+    exclude: org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/magnet?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=UTF-8}
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:magnet}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  servlet:
+    multipart:
+      max-file-size: 8MB
+      max-request-size: 8MB
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+mybatis:
+  mapper-locations: classpath:mappers/*.xml
+  type-handlers-package: com.magnetplatform.infrastructure.mybatis
+
+magnet:
+  security:
+    jwt-secret: ${JWT_SECRET:dev-only-insecure-secret-change-me-please-32bytes!!}
+  parse:
+    timeout-seconds: ${PARSE_TIMEOUT_SECONDS:90}
+    per-user-daily-limit: ${PARSE_DAILY_LIMIT:50}
+    sweep-delay-ms: ${PARSE_SWEEP_DELAY_MS:5000}
+  storage:
+    root: ${STORAGE_ROOT:./data}
+  engine:
+    libtorrent:
+      grpc:
+        # true 启用 C++ gRPC Sidecar Client；默认 false 走 Mock
+        enabled: ${MAGNET_GRPC_ENABLED:false}
+        endpoint: ${MAGNET_GRPC_ENDPOINT:localhost:50051}
+        insecure: ${MAGNET_GRPC_INSECURE:true}

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.magnetplatform.infrastructure.mapper.ResourceGcMapper">
+
+    <insert id="upsertCandidate">
+        INSERT INTO resource_gc_candidate
+            (resource_id, state, candidate_at, not_before, last_error, updated_at)
+        VALUES (#{resourceId}, 'PENDING', #{candidateAt}, #{notBefore}, NULL, #{updatedAt})
+        ON DUPLICATE KEY UPDATE
+            state = 'PENDING', candidate_at = #{candidateAt}, not_before = #{notBefore},
+            last_error = NULL, updated_at = #{updatedAt}
+    </insert>
+
+    <select id="findDue" resultType="java.util.UUID">
+        SELECT resource_id FROM resource_gc_candidate
+        WHERE state = 'PENDING' AND not_before &lt;= #{now}
+        ORDER BY not_before, candidate_at
+        LIMIT #{limit}
+    </select>
+
+    <delete id="removeCandidate">
+        DELETE FROM resource_gc_candidate WHERE resource_id = #{resourceId}
+    </delete>
+
+    <update id="recordFailure">
+        UPDATE resource_gc_candidate
+        SET state = 'FAILED', last_error = #{lastError}, updated_at = #{updatedAt}
+        WHERE resource_id = #{resourceId}
+    </update>
+</mapper>

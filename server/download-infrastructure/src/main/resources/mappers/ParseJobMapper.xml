@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.magnetplatform.infrastructure.mapper.ParseJobMapper">
+
+    <resultMap id="job" type="com.magnetplatform.domain.parse.ParseJob">
+        <constructor>
+            <arg column="id" javaType="java.util.UUID"/>
+            <arg column="user_id" javaType="java.util.UUID"/>
+            <arg column="resource_id" javaType="java.util.UUID"/>
+            <arg column="input_type" javaType="com.magnetplatform.domain.parse.InputType"/>
+            <arg column="input_hash" javaType="byte[]"/>
+            <arg column="input_uri" javaType="java.lang.String"/>
+            <arg column="input_path" javaType="java.lang.String"/>
+            <arg column="display_hint" javaType="java.lang.String"/>
+            <arg column="status" javaType="com.magnetplatform.domain.parse.ParseStatus"/>
+            <arg column="error_code" javaType="java.lang.String"/>
+            <arg column="error_message" javaType="java.lang.String"/>
+            <arg column="version" javaType="long"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="columns">id, user_id, resource_id, input_type, input_hash, input_uri, input_path,
+        display_hint, status, error_code, error_message, version, created_at, updated_at</sql>
+
+    <insert id="insert" parameterType="com.magnetplatform.domain.parse.ParseJob">
+        INSERT INTO parse_job (<include refid="columns"/>)
+        VALUES (#{id}, #{userId}, #{resourceId}, #{inputType}, #{inputHash}, #{inputUri}, #{inputPath},
+                #{displayHint}, #{status}, #{errorCode}, #{errorMessage}, #{version},
+                #{createdAt}, #{updatedAt})
+    </insert>
+
+    <select id="findById" resultMap="job">
+        SELECT <include refid="columns"/> FROM parse_job WHERE id = #{id}
+    </select>
+
+    <select id="findByUser" resultMap="job">
+        SELECT <include refid="columns"/> FROM parse_job
+        WHERE user_id = #{userId}
+        <if test="status != null">AND status = #{status}</if>
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countByUser" resultType="long">
+        SELECT COUNT(*) FROM parse_job
+        WHERE user_id = #{userId}
+        <if test="status != null">AND status = #{status}</if>
+    </select>
+
+    <update id="markStatus">
+        UPDATE parse_job
+        SET status = #{status}, error_code = #{errorCode}, error_message = #{errorMessage},
+            version = version + 1, updated_at = #{now}
+        WHERE id = #{id}
+    </update>
+
+    <select id="countByUserAndResource" resultType="long">
+        SELECT COUNT(*) FROM parse_job WHERE user_id = #{userId} AND resource_id = #{resourceId}
+    </select>
+
+    <update id="markTimeoutResolving">
+        UPDATE parse_job
+        SET status = 'TIMEOUT', error_code = 'METADATA_TIMEOUT', error_message = '元数据解析超时',
+            version = version + 1, updated_at = #{now}
+        WHERE status = 'RESOLVING' AND updated_at &lt; #{cutoff}
+    </update>
+
+    <select id="findByStatus" resultMap="job">
+        SELECT <include refid="columns"/> FROM parse_job
+        WHERE status = #{status}
+        ORDER BY updated_at ASC
+        LIMIT #{limit}
+    </select>
+</mapper>

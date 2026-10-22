@@ -1,0 +1,508 @@
+package com.magnetplatform.application;
+
+import com.magnetplatform.application.port.DownloadTaskRepository;
+import com.magnetplatform.application.port.DownloadStorage;
+import com.magnetplatform.application.port.EngineSessionRepository;
+import com.magnetplatform.application.port.ParseJobRepository;
+import com.magnetplatform.application.port.TaskEventRepository;
+import com.magnetplatform.application.port.TorrentResourceRepository;
+import com.magnetplatform.application.port.TorrentStorage;
+import com.magnetplatform.domain.common.DomainException;
+import com.magnetplatform.domain.common.ErrorCodes;
+import com.magnetplatform.domain.parse.InputType;
+import com.magnetplatform.domain.parse.ParseJob;
+import com.magnetplatform.domain.parse.ParseStatus;
+import com.magnetplatform.domain.resource.TorrentFileInfo;
+import com.magnetplatform.domain.resource.TorrentResource;
+import com.magnetplatform.domain.resource.VersionType;
+import com.magnetplatform.domain.task.DownloadTask;
+import com.magnetplatform.domain.task.DownloadTaskFile;
+import com.magnetplatform.domain.task.EngineSessionRecord;
+import com.magnetplatform.domain.task.TaskEvent;
+import com.magnetplatform.domain.task.TaskStatus;
+import com.magnetplatform.spi.DownloadEngine;
+import com.magnetplatform.spi.EngineCapabilities;
+import com.magnetplatform.spi.EngineKind;
+import com.magnetplatform.spi.EngineOptions;
+import com.magnetplatform.spi.EngineSession;
+import com.magnetplatform.spi.EngineSnapshot;
+import com.magnetplatform.spi.ResourceDescriptor;
+import com.magnetplatform.spi.ResumeSnapshot;
+import com.magnetplatform.spi.SessionState;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+
+import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class TaskServiceTest {
+
+    // ---------- 内存假实现 ----------
+
+    static class InMemoryTasks implements DownloadTaskRepository {
+        final Map<UUID, DownloadTask> byId = new LinkedHashMap<>();
+        final Map<UUID, List<DownloadTaskFile>> files = new HashMap<>();
+
+        public void insert(DownloadTask task, List<DownloadTaskFile> taskFiles) {
+            byId.put(task.getId(), task);
+            files.put(task.getId(), new ArrayList<>(taskFiles));
+        }
+
+        public Optional<DownloadTask> findById(UUID id) {
+            return Optional.ofNullable(byId.get(id));
+        }
+
+        public List<DownloadTaskFile> findFiles(UUID taskId) {
+            return files.getOrDefault(taskId, List.of());
+        }
+
+        public List<DownloadTask> findByUser(UUID userId, TaskStatus status, int offset, int limit) {
+            return byId.values().stream()
+                    .filter(t -> t.getUserId().equals(userId) && t.getDeletedAt() == null)
+                    .filter(t -> status == null || t.getStatus() == status)
+                    .sorted(Comparator.comparing(DownloadTask::getCreatedAt).reversed())
+                    .skip(offset).limit(limit).toList();
+        }
+
+        public long countByUser(UUID userId, TaskStatus status) {
+            return byId.values().stream()
+                    .filter(t -> t.getUserId().equals(userId) && t.getDeletedAt() == null)
+                    .filter(t -> status == null || t.getStatus() == status)
+                    .count();
+        }
+
+        public List<DownloadTask> findByStatuses(List<TaskStatus> statuses, int limit) {
+            return byId.values().stream()
+                    .filter(t -> statuses.contains(t.getStatus()) && t.getDeletedAt() == null)
+                    .limit(limit).toList();
+        }
+
+        public List<DownloadTask> findActiveByResource(UUID resourceId) {
+            return byId.values().stream()
+                    .filter(t -> t.getResourceId().equals(resourceId) && t.getDeletedAt() == null)
+                    .filter(t -> t.getStatus().contributesDemand())
+                    .toList();
+        }
+
+        public boolean updateCas(DownloadTask task) {
+            DownloadTask current = byId.get(task.getId());
+            if (current == null || current.getVersion() != task.getVersion() - 1) {
+                return false;
+            }
+            byId.put(task.getId(), task);
+            return true;
+        }
+    }
+
+    static class InMemoryEvents implements TaskEventRepository {
+        final Map<UUID, List<TaskEvent>> byTask = new HashMap<>();
+
+        public void append(UUID taskId, String eventType, String payloadJson) {
+            List<TaskEvent> list = byTask.computeIfAbsent(taskId, k -> new ArrayList<>());
+            list.add(new TaskEvent(UUID.randomUUID(), taskId, list.size() + 1L, eventType, payloadJson,
+                    LocalDateTime.now()));
+        }
+
+        public List<TaskEvent> findAfter(UUID taskId, long afterSeq, int limit) {
+            return byTask.getOrDefault(taskId, List.of()).stream()
+                    .filter(e -> e.getSeq() > afterSeq).limit(limit).toList();
+        }
+    }
+
+    static class FakeTorrentStorage implements TorrentStorage {
+        final String path = "uploads/demo.torrent";
+        final byte[] bytes = new byte[]{1, 2, 3};
+
+        public String saveTorrent(byte[] bytes) {
+            return path;
+        }
+
+        public Optional<byte[]> loadTorrent(String relativePath) {
+            return path.equals(relativePath) ? Optional.of(bytes) : Optional.empty();
+        }
+    }
+
+    static class FakeDownloadStorage implements DownloadStorage {
+        public Path resourceRoot(UUID resourceId) {
+            return Path.of("storage", "resources", resourceId.toString());
+        }
+
+        public Path resumeFile(UUID resourceId) {
+            return Path.of("storage", "resume", resourceId + ".dat");
+        }
+
+        public Path exportRoot(UUID userId, UUID taskId) {
+            return Path.of("storage", "exports", userId.toString(), taskId.toString());
+        }
+
+        public Path resolveResourceFile(UUID resourceId, String relativePath) {
+            return resourceRoot(resourceId).resolve(relativePath);
+        }
+
+        public void writeResumeAtomically(UUID resourceId, byte[] bytes) {
+        }
+
+        public Optional<byte[]> readResume(UUID resourceId) {
+            return Optional.empty();
+        }
+
+        public void materialize(Path source, Path target) {
+        }
+
+        public void deleteTree(Path root) {
+        }
+    }
+
+    static class RecordingEngine implements DownloadEngine {
+        ResourceDescriptor resource;
+        int createCalls;
+
+        public EngineKind kind() {
+            return EngineKind.LIBTORRENT;
+        }
+
+        public EngineCapabilities capabilities() {
+            return new EngineCapabilities(true, true, true, false, true, true);
+        }
+
+        public EngineSession createOrAttach(ResourceDescriptor resource, EngineOptions options) {
+            createCalls++;
+            this.resource = resource;
+            return new EngineSession(resource.resourceId(), EngineKind.LIBTORRENT, SessionState.DISCOVERING);
+        }
+
+        public void setDemand(String engineSessionId, Set<Integer> requestedFileIndices) {
+        }
+
+        public void pauseSession(String engineSessionId) {
+        }
+
+        public void resumeSession(String engineSessionId) {
+        }
+
+        public EngineSnapshot snapshot(String engineSessionId) {
+            return EngineSnapshot.empty(engineSessionId);
+        }
+
+        public ResumeSnapshot saveResume(String engineSessionId) {
+            return null;
+        }
+
+        public void removeSession(String engineSessionId, boolean removeUnreferencedData) {
+        }
+    }
+
+    static class InMemorySessions implements EngineSessionRepository {
+        final Map<String, EngineSessionRecord> byKey = new HashMap<>();
+
+        public Optional<EngineSessionRecord> findByResource(UUID resourceId, String engineType) {
+            return Optional.ofNullable(byKey.get(resourceId + ":" + engineType));
+        }
+
+        public void insert(EngineSessionRecord record) {
+            byKey.put(record.getResourceId() + ":" + record.getEngineType(), record);
+        }
+
+        public void updateState(UUID id, String state, LocalDateTime updatedAt) {
+        }
+    }
+
+    static class InMemoryParseJobs implements ParseJobRepository {
+        final Map<UUID, ParseJob> byId = new LinkedHashMap<>();
+
+        public void insert(ParseJob job) { byId.put(job.getId(), job); }
+
+        public Optional<ParseJob> findById(UUID id) { return Optional.ofNullable(byId.get(id)); }
+
+        public List<ParseJob> findByUser(UUID userId, ParseStatus status, int offset, int limit) { return List.of(); }
+
+        public long countByUser(UUID userId, ParseStatus status) { return 0; }
+
+        public void markStatus(UUID id, ParseStatus status, String errorCode, String errorMessage) { }
+
+        public boolean existsByUserAndResource(UUID userId, UUID resourceId) {
+            return byId.values().stream()
+                    .anyMatch(j -> j.getUserId().equals(userId) && j.getResourceId().equals(resourceId));
+        }
+
+        public int markTimeoutResolving(LocalDateTime cutoff) { return 0; }
+
+        public List<ParseJob> findByStatus(ParseStatus status, int limit) { return List.of(); }
+    }
+
+    static class InMemoryResources implements TorrentResourceRepository {
+        final Map<UUID, TorrentResource> byId = new LinkedHashMap<>();
+        final Map<UUID, List<TorrentFileInfo>> files = new HashMap<>();
+
+        public Optional<TorrentResource> findById(UUID id) { return Optional.ofNullable(byId.get(id)); }
+
+        public Optional<TorrentResource> findByHash(String hashType, byte[] hashBytes) { return Optional.empty(); }
+
+        public void insert(TorrentResource resource) { byId.put(resource.getId(), resource); }
+
+        public void insertAlias(UUID resourceId, String hashType, byte[] hashBytes) { }
+
+        public void update(TorrentResource resource) { byId.put(resource.getId(), resource); }
+
+        public void insertFiles(UUID resourceId, List<TorrentFileInfo> fileInfos) {
+            files.put(resourceId, fileInfos);
+        }
+
+        public List<TorrentFileInfo> findFiles(UUID resourceId) {
+            return files.getOrDefault(resourceId, List.of());
+        }
+    }
+
+    // ---------- 用例 ----------
+
+    private InMemoryTasks tasks;
+    private InMemoryEvents events;
+    private InMemorySessions sessions;
+    private InMemoryParseJobs parseJobs;
+    private InMemoryResources resources;
+    private FakeTorrentStorage torrentStorage;
+    private FakeDownloadStorage downloadStorage;
+    private TaskService service;
+    private UUID alice;
+    private UUID bob;
+    private UUID resourceId;
+    private UUID parseId;
+
+    @BeforeEach
+    void setUp() {
+        tasks = new InMemoryTasks();
+        events = new InMemoryEvents();
+        sessions = new InMemorySessions();
+        parseJobs = new InMemoryParseJobs();
+        resources = new InMemoryResources();
+        torrentStorage = new FakeTorrentStorage();
+        downloadStorage = new FakeDownloadStorage();
+        service = new TaskService(tasks, events, sessions, parseJobs, resources,
+                torrentStorage, downloadStorage, List.of());
+        alice = UUID.randomUUID();
+        bob = UUID.randomUUID();
+        resourceId = UUID.randomUUID();
+        LocalDateTime now = LocalDateTime.now();
+        resources.insert(new TorrentResource(resourceId, "btih:abc", new byte[20], null,
+                VersionType.V1, "demo", 16384L, 150L, false, "TORRENT", List.of(), 2, now));
+        resources.insertFiles(resourceId, List.of(
+                new TorrentFileInfo(0, "a.bin", 100L, null),
+                new TorrentFileInfo(1, "b.bin", 50L, null)));
+        parseId = UUID.randomUUID();
+        parseJobs.insert(new ParseJob(parseId, alice, resourceId, InputType.TORRENT, null,
+                "demo.torrent", "/x", "demo", ParseStatus.READY, null, null, 0L, now, now));
+    }
+
+    @Test
+    void dispatchQueuedTaskPassesTorrentBytesAndResourceStoragePath() {
+        resources.update(new TorrentResource(resourceId, "btih:abc", new byte[20], null,
+                VersionType.V1, "demo", 16384L, 150L, false, "TORRENT", List.of(), 2,
+                LocalDateTime.now(), torrentStorage.path));
+        RecordingEngine engine = new RecordingEngine();
+        service = new TaskService(tasks, events, sessions, parseJobs, resources,
+                torrentStorage, downloadStorage, List.of(engine));
+
+        service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+
+        assertNotNull(engine.resource);
+        assertTrue(engine.resource.torrentFile().length > 0);
+        assertArrayEquals(torrentStorage.bytes, engine.resource.torrentFile());
+        assertEquals(downloadStorage.resourceRoot(resourceId).toString(), engine.resource.storagePath());
+    }
+
+    @Test
+    void dispatchQueuedTaskFailsInputLostWhenMetadataPathMissing() {
+        RecordingEngine engine = new RecordingEngine();
+        service = new TaskService(tasks, events, sessions, parseJobs, resources,
+                torrentStorage, downloadStorage, List.of(engine));
+
+        DownloadTask queued = service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+
+        DownloadTask failed = tasks.findById(queued.getId()).orElseThrow();
+        assertEquals(TaskStatus.FAILED, failed.getStatus());
+        assertEquals(ErrorCodes.INPUT_LOST, failed.getErrorCode());
+        assertEquals(0, engine.createCalls);
+        assertNull(engine.resource);
+    }
+
+    @Test
+    void dispatchQueuedTaskFailsInputLostWhenTorrentIsMissing() {
+        resources.update(new TorrentResource(resourceId, "btih:abc", new byte[20], null,
+                VersionType.V1, "demo", 16384L, 150L, false, "TORRENT", List.of(), 2,
+                LocalDateTime.now(), torrentStorage.path));
+        TorrentStorage emptyStorage = new FakeTorrentStorage() {
+            @Override
+            public Optional<byte[]> loadTorrent(String relativePath) {
+                return Optional.empty();
+            }
+        };
+        RecordingEngine engine = new RecordingEngine();
+        service = new TaskService(tasks, events, sessions, parseJobs, resources,
+                emptyStorage, downloadStorage, List.of(engine));
+
+        DownloadTask queued = service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+
+        DownloadTask failed = tasks.findById(queued.getId()).orElseThrow();
+        assertEquals(TaskStatus.FAILED, failed.getStatus());
+        assertEquals(ErrorCodes.INPUT_LOST, failed.getErrorCode());
+        assertEquals(0, engine.createCalls);
+        assertNull(engine.resource);
+    }
+
+    @Test
+    void dispatchQueuedTaskFailsInputLostWhenResourceIsMissing() {
+        RecordingEngine engine = new RecordingEngine();
+        service = new TaskService(tasks, events, sessions, parseJobs, resources,
+                torrentStorage, downloadStorage, List.of(engine));
+
+        DownloadTask queued = service.create(alice, parseId, List.of(0), null, true, null);
+        resources.byId.remove(resourceId);
+        service.dispatchTick(1);
+
+        DownloadTask failed = tasks.findById(queued.getId()).orElseThrow();
+        assertEquals(TaskStatus.FAILED, failed.getStatus());
+        assertEquals(ErrorCodes.INPUT_LOST, failed.getErrorCode());
+        assertEquals(0, engine.createCalls);
+        assertNull(engine.resource);
+    }
+
+    @Test
+    void createComputesSelectedBytesAndRecordsEvent() {
+        DownloadTask task = service.create(alice, parseId, List.of(0, 1), "iso/2026", true, 5);
+        assertEquals(TaskStatus.QUEUED, task.getStatus());
+        assertEquals(150L, task.getSelectedBytes());
+        assertEquals(5, task.getPriority());
+        assertEquals("iso/2026", task.getTargetSubdirectory());
+        assertEquals(2, tasks.findFiles(task.getId()).size());
+        assertEquals(1, events.findAfter(task.getId(), 0, 10).size());
+    }
+
+    @Test
+    void createStartLaterYieldsCreated() {
+        DownloadTask task = service.create(alice, parseId, List.of(1), null, false, null);
+        assertEquals(TaskStatus.CREATED, task.getStatus());
+        assertEquals(50L, task.getSelectedBytes());
+        assertEquals(0, task.getPriority());
+        assertEquals("", task.getTargetSubdirectory());
+    }
+
+    @Test
+    void createRejectsInvalidIndexAndPathTraversal() {
+        assertCode(ErrorCodes.VALIDATION, () -> service.create(alice, parseId, List.of(99), null, true, null));
+        assertCode(ErrorCodes.VALIDATION, () -> service.create(alice, parseId, List.of(), null, true, null));
+        assertCode(ErrorCodes.VALIDATION,
+                () -> service.create(alice, parseId, List.of(0), "../escape", true, null));
+    }
+
+    @Test
+    void createRejectsForeignParse() {
+        assertCode(ErrorCodes.NOT_FOUND, () -> service.create(bob, parseId, List.of(0), null, true, null));
+    }
+
+    @Test
+    void pauseResumeCycle() {
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        DownloadTask pausing = service.pause(alice, false, task.getId());
+        assertEquals(TaskStatus.PAUSING, pausing.getStatus());
+        // 幂等
+        assertEquals(TaskStatus.PAUSING, service.pause(alice, false, task.getId()).getStatus());
+        // 调度器落 PAUSED 后可恢复
+        DownloadTask paused = tasks.findById(task.getId()).orElseThrow()
+                .withStatus(TaskStatus.PAUSED, LocalDateTime.now());
+        tasks.updateCas(paused);
+        DownloadTask queued = service.resume(alice, false, task.getId());
+        assertEquals(TaskStatus.QUEUED, queued.getStatus());
+    }
+
+    @Test
+    void pauseRejectsTerminal() {
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        DownloadTask completed = tasks.findById(task.getId()).orElseThrow()
+                .withStatus(TaskStatus.STARTING, LocalDateTime.now());
+        tasks.updateCas(completed);
+        DownloadTask dl = tasks.findById(task.getId()).orElseThrow()
+                .withStatus(TaskStatus.DOWNLOADING, LocalDateTime.now());
+        tasks.updateCas(dl);
+        DownloadTask verifying = tasks.findById(task.getId()).orElseThrow()
+                .withStatus(TaskStatus.VERIFYING, LocalDateTime.now());
+        tasks.updateCas(verifying);
+        DownloadTask done = tasks.findById(task.getId()).orElseThrow()
+                .withStatus(TaskStatus.COMPLETED, LocalDateTime.now());
+        tasks.updateCas(done);
+        assertCode(ErrorCodes.CONFLICT, () -> service.pause(alice, false, task.getId()));
+    }
+
+    @Test
+    void retryOnlyFromFailed() {
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        assertCode(ErrorCodes.CONFLICT, () -> service.retry(alice, false, task.getId()));
+        DownloadTask failed = tasks.findById(task.getId()).orElseThrow()
+                .withStatus(TaskStatus.FAILED, LocalDateTime.now());
+        tasks.updateCas(failed);
+        assertEquals(TaskStatus.RETRY_WAIT, service.retry(alice, false, task.getId()).getStatus());
+    }
+
+    @Test
+    void patchValidatesRanges() {
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        DownloadTask patched = service.patch(alice, false, task.getId(), 7, 1024L);
+        assertEquals(7, patched.getPriority());
+        assertEquals(1024L, patched.getSpeedLimit());
+        assertCode(ErrorCodes.VALIDATION, () -> service.patch(alice, false, task.getId(), 11, null));
+        assertCode(ErrorCodes.VALIDATION, () -> service.patch(alice, false, task.getId(), null, -1L));
+    }
+
+    @Test
+    void deleteIsIdempotentAndHidesTask() {
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        service.delete(alice, false, task.getId());
+        assertNotNull(tasks.findById(task.getId()).orElseThrow().getDeletedAt());
+        service.delete(alice, false, task.getId()); // 幂等
+        assertCode(ErrorCodes.NOT_FOUND, () -> service.getTask(alice, false, task.getId()));
+    }
+
+    @Test
+    void tenantIsolationOnAllCommands() {
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        assertCode(ErrorCodes.NOT_FOUND, () -> service.pause(bob, false, task.getId()));
+        assertCode(ErrorCodes.NOT_FOUND, () -> service.resume(bob, false, task.getId()));
+        assertCode(ErrorCodes.NOT_FOUND, () -> service.patch(bob, false, task.getId(), 1, null));
+        assertCode(ErrorCodes.NOT_FOUND, () -> service.delete(bob, false, task.getId()));
+        assertCode(ErrorCodes.NOT_FOUND, () -> service.getTaskFiles(bob, false, task.getId()));
+        // 管理员可越权
+        assertEquals(task.getId(), service.getTask(bob, true, task.getId()).getId());
+    }
+
+    @Test
+    void illegalTransitionRejectedByStateMachine() {
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, false, null);
+        // CREATED 不可直接 DOWNLOADING
+        assertTrue(!task.getStatus().canTransitionTo(TaskStatus.DOWNLOADING));
+        assertTrue(task.getStatus().canTransitionTo(TaskStatus.QUEUED));
+    }
+
+    private static void assertCode(String code, Executable executable) {
+        DomainException e = assertThrows(DomainException.class, executable);
+        assertEquals(code, e.code(), e::getMessage);
+    }
+}

@@ -1,0 +1,60 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: magnet-mysql
+    command:
+      - --bind-address=0.0.0.0
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-magnet}
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_DATABASE: magnet
+    ports:
+      - "0.0.0.0:3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pmagnet"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: magnet-redis
+    command:
+      - redis-server
+      - --bind
+      - 0.0.0.0
+      - --protected-mode
+      - "no"
+      - --appendonly
+      - "yes"
+    ports:
+      - "0.0.0.0:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  libtorrent-worker:
+    image: magnet-libtorrent-worker:latest
+    container_name: magnet-worker
+    ports:
+      - "0.0.0.0:50051:50051"   # gRPC
+      - "0.0.0.0:6881:6881"     # DHT
+      - "0.0.0.0:6881:6881/udp"
+    volumes:
+      - ../server/download-api/data:/data
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+  redis-data:
+  worker-data:

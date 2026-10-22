@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.magnetplatform.infrastructure.mapper.DownloadTaskMapper">
+
+    <resultMap id="task" type="com.magnetplatform.domain.task.DownloadTask">
+        <constructor>
+            <arg column="id" javaType="java.util.UUID"/>
+            <arg column="user_id" javaType="java.util.UUID"/>
+            <arg column="resource_id" javaType="java.util.UUID"/>
+            <arg column="status" javaType="com.magnetplatform.domain.task.TaskStatus"/>
+            <arg column="selected_bytes" javaType="long"/>
+            <arg column="verified_bytes" javaType="long"/>
+            <arg column="priority" javaType="int"/>
+            <arg column="speed_limit" javaType="java.lang.Long"/>
+            <arg column="target_subdirectory" javaType="java.lang.String"/>
+            <arg column="error_code" javaType="java.lang.String"/>
+            <arg column="error_message" javaType="java.lang.String"/>
+            <arg column="version" javaType="long"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+            <arg column="started_at" javaType="java.time.LocalDateTime"/>
+            <arg column="completed_at" javaType="java.time.LocalDateTime"/>
+            <arg column="deleted_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <resultMap id="taskFile" type="com.magnetplatform.domain.task.DownloadTaskFile">
+        <constructor>
+            <arg column="id" javaType="java.util.UUID"/>
+            <arg column="task_id" javaType="java.util.UUID"/>
+            <arg column="file_index" javaType="int"/>
+            <arg column="selected" javaType="boolean"/>
+            <arg column="verified_bytes" javaType="long"/>
+            <arg column="export_state" javaType="java.lang.String"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="taskColumns">id, user_id, resource_id, status, selected_bytes, verified_bytes, priority,
+        speed_limit, target_subdirectory, error_code, error_message, version, created_at, updated_at,
+        started_at, completed_at, deleted_at</sql>
+
+    <insert id="insert" parameterType="com.magnetplatform.domain.task.DownloadTask">
+        INSERT INTO download_task (<include refid="taskColumns"/>)
+        VALUES (#{id}, #{userId}, #{resourceId}, #{status}, #{selectedBytes}, #{verifiedBytes},
+                #{priority}, #{speedLimit}, #{targetSubdirectory}, #{errorCode}, #{errorMessage},
+                #{version}, #{createdAt}, #{updatedAt}, #{startedAt}, #{completedAt}, #{deletedAt})
+    </insert>
+
+    <insert id="insertFile" parameterType="com.magnetplatform.domain.task.DownloadTaskFile">
+        INSERT INTO download_task_file (id, task_id, file_index, selected, verified_bytes, export_state)
+        VALUES (#{id}, #{taskId}, #{fileIndex}, #{selected}, #{verifiedBytes}, #{exportState})
+    </insert>
+
+    <select id="findById" resultMap="task">
+        SELECT <include refid="taskColumns"/> FROM download_task WHERE id = #{id}
+    </select>
+
+    <select id="findFiles" resultMap="taskFile">
+        SELECT id, task_id, file_index, selected, verified_bytes, export_state
+        FROM download_task_file WHERE task_id = #{taskId} ORDER BY file_index
+    </select>
+
+    <select id="findByUser" resultMap="task">
+        SELECT <include refid="taskColumns"/> FROM download_task
+        WHERE user_id = #{userId} AND deleted_at IS NULL
+        <if test="status != null">AND status = #{status}</if>
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countByUser" resultType="long">
+        SELECT COUNT(*) FROM download_task
+        WHERE user_id = #{userId} AND deleted_at IS NULL
+        <if test="status != null">AND status = #{status}</if>
+    </select>
+
+    <select id="findByStatuses" resultMap="task">
+        SELECT <include refid="taskColumns"/> FROM download_task
+        WHERE status IN
+        <foreach collection="statuses" item="s" open="(" separator="," close=")">#{s}</foreach>
+        AND deleted_at IS NULL
+        ORDER BY priority DESC, created_at ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="findActiveByResource" resultMap="task">
+        SELECT <include refid="taskColumns"/> FROM download_task
+        WHERE resource_id = #{resourceId} AND deleted_at IS NULL
+        AND status IN ('QUEUED','STARTING','DOWNLOADING','VERIFYING','RETRY_WAIT','REPAIRING')
+    </select>
+
+    <update id="updateCas">
+        UPDATE download_task SET
+            status = #{task.status},
+            verified_bytes = #{task.verifiedBytes},
+            priority = #{task.priority},
+            speed_limit = #{task.speedLimit},
+            error_code = #{task.errorCode},
+            error_message = #{task.errorMessage},
+            version = #{task.version},
+            updated_at = #{task.updatedAt},
+            started_at = #{task.startedAt},
+            completed_at = #{task.completedAt},
+            deleted_at = #{task.deletedAt}
+        WHERE id = #{task.id} AND version = #{expectedVersion}
+    </update>
+</mapper>

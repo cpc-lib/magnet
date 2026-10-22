@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.magnetplatform.infrastructure.mapper.EngineSessionMapper">
+
+    <resultMap id="session" type="com.magnetplatform.domain.task.EngineSessionRecord">
+        <constructor>
+            <arg column="id" javaType="java.util.UUID"/>
+            <arg column="resource_id" javaType="java.util.UUID"/>
+            <arg column="worker_id" javaType="java.lang.String"/>
+            <arg column="engine_type" javaType="java.lang.String"/>
+            <arg column="state" javaType="java.lang.String"/>
+            <arg column="owner_epoch" javaType="long"/>
+            <arg column="lease_until" javaType="java.time.LocalDateTime"/>
+            <arg column="resume_version" javaType="long"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+            <arg column="resume_path" javaType="java.lang.String"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="columns">id, resource_id, worker_id, engine_type, state, owner_epoch, lease_until,
+        resume_version, created_at, updated_at, resume_path</sql>
+
+    <select id="findByResource" resultMap="session">
+        SELECT <include refid="columns"/> FROM engine_session
+        WHERE resource_id = #{resourceId} AND engine_type = #{engineType}
+    </select>
+
+    <insert id="insert" parameterType="com.magnetplatform.domain.task.EngineSessionRecord">
+        INSERT INTO engine_session (<include refid="columns"/>)
+        VALUES (#{id}, #{resourceId}, #{workerId}, #{engineType}, #{state}, #{ownerEpoch},
+                #{leaseUntil}, #{resumeVersion}, #{createdAt}, #{updatedAt}, #{resumePath})
+    </insert>
+
+    <update id="updateState">
+        UPDATE engine_session SET state = #{state}, updated_at = #{updatedAt} WHERE id = #{id}
+    </update>
+</mapper>
