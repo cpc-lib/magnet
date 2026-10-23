@@ -135,6 +135,13 @@ python native/tests/test_ha.py
 - 本轮只构建 ha-test 镜像并运行隔离验证，没有替用户停止或升级正在使用的 Worker，也没有删除用户数据。
 - P6 aria2 目前仅支持单 API 控制面；不具备 libtorrent Worker 的物理 fencing，不能据此宣称 HTTP HA。
   参照 README 第六节启用 http Compose profile，RPC 端口仅绑定 localhost，启动时必须设置密钥。
+- aria2 运行镜像需显式构建：`docker compose -f infra/docker-compose.yml --profile http build aria2`。
+  默认 profile 不包含 aria2；测试标签 `magnet-aria2:acceptance` 不等于运行标签 `magnet-aria2:latest`。
+  2026-10-23 已在本机实际构建 latest，`docker image inspect magnet-aria2:latest` 成功，
+  `docker run --rm --network none magnet-aria2:latest --version` 返回 aria2 1.36.0 且支持 HTTPS。
+  此次仅构建镜像及运行无网络的临时版本检查容器，没有启动/替换用户的 aria2 服务。
+  修复记录 `e6c4b30`；设置 `MAGNET_TEST_SOURCE_HOST` 为当前可达宿主 IPv4 后运行 `mvn test`：
+  170 项全部通过，无跳过（含真实 aria2 3 项）；`cd web; npm run build` 成功。
 - HTTP/HTTPS 资源需正的已知大小，不支持空文件/未知大小流、认证直链或自定义请求头；拒绝不安全文件名。
 
 ## 技术陷阱
@@ -159,6 +166,8 @@ python native/tests/test_ha.py
 - aria2 GID 缺失通过 HTTP 400 + JSON-RPC code 1 返回，不能在解析错误体前直接丢弃 HTTP 400。
 - MyBatis 有效租约检查排除 FAILED 会话；不能先把控制面会话置 FAILED，再试图在 withLease 内更新任务。
 - Compose `${VAR:?}` 即使 profile 未激活也会提前插值；HTTP 密钥改在 aria2 容器启动时检查，避免破坏 BT 启动。
+- VPN/TUN 可能让测试源自动选出的宿主地址与容器网桥重叠，造成真实 aria2 测试 Connection refused；
+  测试支持 `MAGNET_TEST_SOURCE_HOST` 显式指定可达 IPv4，生成的测试证书 SAN 同步使用该地址。
 
 ## 后续工作
 
