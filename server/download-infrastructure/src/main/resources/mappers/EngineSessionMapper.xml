@@ -34,14 +34,16 @@
     </insert>
 
     <update id="updateState">
-        UPDATE engine_session SET state = #{state}, updated_at = #{updatedAt} WHERE id = #{id}
+        UPDATE engine_session SET state = #{state}, updated_at = #{updatedAt} WHERE id = #{id} AND worker_id = #{workerId} AND owner_epoch = #{ownerEpoch}
+          AND lease_until > UTC_TIMESTAMP(6)
     </update>
 
     <update id="updateResume">
         UPDATE engine_session SET resume_version = #{resumeVersion},
                                   resume_path = #{resumePath},
                                   updated_at = #{updatedAt}
-        WHERE id = #{id}
+        WHERE id = #{id} AND worker_id = #{workerId} AND owner_epoch = #{ownerEpoch}
+          AND lease_until > UTC_TIMESTAMP(6)
     </update>
 
     <select id="findRecoverable" resultMap="session">
@@ -49,4 +51,47 @@
         WHERE state NOT IN ('STOPPED', 'FAILED')
         ORDER BY updated_at ASC
     </select>
+
+    <select id="lockOwned" resultMap="session">
+        SELECT <include refid="columns"/> FROM engine_session
+        WHERE id = #{id} AND worker_id = #{workerId} AND owner_epoch = #{ownerEpoch}
+          AND lease_until > UTC_TIMESTAMP(6)
+          AND state NOT IN ('STOPPED', 'FAILED')
+        FOR UPDATE
+    </select>
+
+    <select id="lockResource" resultType="java.util.UUID">
+        SELECT id FROM torrent_resource WHERE id = #{resourceId} FOR UPDATE
+    </select>
+
+    <!-- P5 租约（规格 §12.2）：全部时间判断使用 MySQL UTC_TIMESTAMP(6) 时间源，禁止应用侧时钟 -->
+
+    <insert id="insertIfAbsent">
+        INSERT IGNORE INTO engine_session (<include refid="columns"/>)
+        VALUES (#{id}, #{resourceId}, #{workerId}, #{engineType}, #{state}, #{ownerEpoch},
+                #{leaseUntil}, #{resumeVersion}, #{createdAt}, #{updatedAt}, #{resumePath})
+    </insert>
+
+    <update id="renewLease">
+        UPDATE engine_session
+        SET lease_until = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL #{leaseSeconds} SECOND),
+            updated_at  = UTC_TIMESTAMP(6)
+        WHERE resource_id = #{resourceId}
+          AND engine_type = #{engineType}
+          AND worker_id   = #{workerId}
+          AND owner_epoch = #{ownerEpoch}
+          AND lease_until > UTC_TIMESTAMP(6)
+          AND state NOT IN ('STOPPED', 'FAILED')
+    </update>
+
+    <update id="acquireLease">
+        UPDATE engine_session
+        SET worker_id   = #{workerId},
+            owner_epoch = owner_epoch + 1,
+            lease_until = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL #{leaseSeconds} SECOND),
+            updated_at  = UTC_TIMESTAMP(6)
+        WHERE resource_id = #{resourceId}
+          AND engine_type = #{engineType}
+          AND (lease_until IS NULL OR lease_until &lt;= UTC_TIMESTAMP(6) OR state = 'STOPPED')
+    </update>
 </mapper>

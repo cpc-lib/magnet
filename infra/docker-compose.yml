@@ -49,15 +49,29 @@ services:
       context: ../native
     container_name: magnet-worker
     ports:
-      - "0.0.0.0:50051:50051"   # gRPC
+      - "127.0.0.1:50051:50051"   # 同宿主机 API 专用 gRPC
       - "0.0.0.0:6881:6881"     # DHT
       - "0.0.0.0:6881:6881/udp"
     # API 在宿主机 server/download-api 下以 STORAGE_ROOT=./data 运行时，与 Worker 的 /data 共享同一物理目录
     volumes:
       - ../server/download-api/data:/data
+      - worker-locks:/locks
+    restart: unless-stopped
+
+  libtorrent-worker-2:
+    profiles: [ha]
+    image: magnet-libtorrent-worker:latest
+    environment:
+      WORKER_ID: local-worker-2
+    ports:
+      - "127.0.0.1:50052:50051"
+    volumes:
+      - ../server/download-api/data:/data
+      - worker-locks:/locks
     restart: unless-stopped
 
 volumes:
   mysql-data:
   redis-data:
   worker-data:
+  worker-locks:

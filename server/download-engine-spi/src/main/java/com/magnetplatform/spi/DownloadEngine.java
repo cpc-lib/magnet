@@ -13,7 +13,16 @@ public interface DownloadEngine {
 
     EngineCapabilities capabilities();
 
+    /** 不可达的 Worker 不得凭控制面仍存活而持续续租。 */
+    default boolean available() {
+        return true;
+    }
+
     EngineSession createOrAttach(ResourceDescriptor resource, EngineOptions options);
+
+    /** 已在数据库提交的续租令牌；适配器后续命令不得延长此截止时间。 */
+    default void renewLease(String engineSessionId, long ownerEpoch, java.time.Instant leaseUntil) {
+    }
 
     void setDemand(String engineSessionId, Set<Integer> requestedFileIndices);
 

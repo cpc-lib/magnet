@@ -40,6 +40,8 @@
 #include <system_error>
 #include <vector>
 
+#include "resource_fences.h"
+
 namespace {
 
 using magnetplatform::engine::v1::DownloadEngine;
@@ -64,6 +66,7 @@ struct SessionEntry {
     std::mutex operation_mutex;
     bool ready = false;
     bool removed = false;
+    bool removing = false;
 };
 
 std::once_flag g_session_init;
@@ -74,6 +77,8 @@ std::mutex g_resume_mutex;
 std::map<std::string, std::int64_t> g_resume_versions;
 std::mutex g_alert_mutex;
 std::filesystem::path g_download_root;
+std::unique_ptr<ResourceFences> g_fences;
+std::mutex g_command_mutex;
 
 std::shared_ptr<SessionEntry> find_session_entry(const std::string& rid) {
     std::lock_guard<std::mutex> lock(g_handles_mutex);
@@ -212,10 +217,32 @@ void init_session() {
         // libtorrent 2.0.8 保留的 setting
         p.settings.set_bool(lt::settings_pack::enable_dht, true);
         p.settings.set_bool(lt::settings_pack::enable_lsd, true);
+        p.settings.set_int(lt::settings_pack::alert_mask, static_cast<int>(
+                lt::alert_category::error | lt::alert_category::storage | lt::alert_category::status));
         p.settings.set_str(lt::settings_pack::listen_interfaces, "0.0.0.0:6881");
         g_session = std::make_unique<lt::session>(std::move(p));
         std::cout << "[worker] libtorrent session 初始化" << std::endl;
     });
+}
+
+bool await_removal(const lt::torrent_handle& handle, bool deleting) {
+    std::lock_guard<std::mutex> alerts_guard(g_alert_mutex);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < until) {
+        g_session->wait_for_alert(lt::milliseconds(50));
+        std::vector<lt::alert*> alerts;
+        g_session->pop_alerts(&alerts);
+        for (const auto* alert : alerts) {
+            if (deleting) {
+                if (const auto* done = lt::alert_cast<lt::torrent_deleted_alert>(alert);
+                        done != nullptr && done->handle == handle) return true;
+            } else {
+                if (const auto* done = lt::alert_cast<lt::torrent_removed_alert>(alert);
+                        done != nullptr && done->handle == handle) return true;
+            }
+        }
+    }
+    return false;
 }
 
 // ---- gRPC 服务实现 ----
@@ -225,7 +252,7 @@ public:
     grpc::Status Health(grpc::ServerContext* /*context*/, const HealthRequest* /*req*/,
                        HealthResponse* resp) override {
         resp->set_ok(true);
-        resp->set_worker_id("local-worker-1");
+        resp->set_worker_id(std::getenv("WORKER_ID") ? std::getenv("WORKER_ID") : "local-worker-1");
         resp->set_libtorrent_version("2.0.8");
         return grpc::Status::OK;
     }
@@ -241,6 +268,13 @@ public:
             return grpc::Status::OK;
         }
 
+        const auto expected_path = (g_download_root / "resources" / rid).lexically_normal();
+        if (storage_path != expected_path) {
+            return {grpc::StatusCode::FAILED_PRECONDITION, "storage_path must match resources/resource_id"};
+        }
+        std::lock_guard<std::mutex> command_lock(g_command_mutex);
+        const auto fenced = g_fences->validate(req->envelope(), true, !req->metadata_only());
+        if (!fenced.ok()) return fenced;
         init_session();
 
         std::shared_ptr<SessionEntry> entry;
@@ -267,6 +301,9 @@ public:
 
             candidate_lock.unlock();
             std::unique_lock<std::mutex> existing_lock(entry->operation_mutex);
+            if (entry->removing) {
+                return {grpc::StatusCode::FAILED_PRECONDITION, "previous removal has not drained"};
+            }
             if (!entry->removed && entry->ready && entry->handle.is_valid()) {
                 const bool upgrading_with_metadata =
                         !entry->handle.status().has_metadata &&
@@ -279,6 +316,10 @@ public:
                     return grpc::Status::OK;
                 }
                 g_session->remove_torrent(entry->handle);
+                if (!await_removal(entry->handle, false)) {
+                    entry->removing = true;
+                    std::_Exit(75); // No safe drain confirmation: restart before reusing storage.
+                }
                 entry->ready = false;
                 entry->handle = lt::torrent_handle();
                 entry_lock = std::move(existing_lock);
@@ -364,6 +405,14 @@ public:
         // The request path is the only storage location trusted by the Worker,
         // including when the add_torrent_params came from resume data.
         p.save_path = storage_path.string();
+        // Resume is a hint, never proof that disk bytes are still valid after takeover.
+        p.flags &= ~lt::torrent_flags::seed_mode;
+        p.have_pieces.clear();
+        p.verified_pieces.clear();
+        p.unfinished_pieces.clear();
+        if (req->metadata_only()) {
+            p.flags |= lt::torrent_flags::default_dont_download;
+        }
 
         lt::error_code ec;
         lt::torrent_handle h = g_session->add_torrent(std::move(p), ec);
@@ -371,6 +420,7 @@ public:
             return fail_add("add_torrent 失败: " + ec.message());
         }
         entry->handle = h;
+        if (!req->metadata_only()) h.force_recheck();
         entry->ready = true;
         std::cout << "[worker] AddTorrent resource=" << rid << " state=" << (int)h.status().state << std::endl;
         resp->set_accepted(true);
@@ -380,6 +430,9 @@ public:
     grpc::Status UpdateFilePriorities(grpc::ServerContext* /*context*/,
                                       const UpdateFilePrioritiesRequest* req,
                                       UpdateFilePrioritiesResponse* resp) override {
+        std::lock_guard<std::mutex> command_lock(g_command_mutex);
+        const auto fenced = g_fences->validate(req->envelope(), false, true);
+        if (!fenced.ok()) return fenced;
         const std::string& rid = req->envelope().resource_id();
         const auto entry = find_session_entry(rid);
         if (!entry) {
@@ -405,6 +458,9 @@ public:
 
     grpc::Status GetSnapshot(grpc::ServerContext* /*context*/, const GetSnapshotRequest* req,
                              GetSnapshotResponse* resp) override {
+        std::lock_guard<std::mutex> command_lock(g_command_mutex);
+        const auto fenced = g_fences->validate(req->envelope(), false, false);
+        if (!fenced.ok()) return fenced;
         const std::string& rid = req->envelope().resource_id();
         const auto entry = find_session_entry(rid);
         if (!entry) {
@@ -453,6 +509,9 @@ public:
     // ---- 生命周期与恢复 RPC ----
 
     grpc::Status Pause(grpc::ServerContext*, const CommandRequest* req, CommandResponse* resp) override {
+        std::lock_guard<std::mutex> command_lock(g_command_mutex);
+        const auto fenced = g_fences->validate(req->envelope(), false, false);
+        if (!fenced.ok()) return fenced;
         const std::string& rid = req->envelope().resource_id();
         if (const auto entry = find_session_entry(rid)) {
             std::lock_guard<std::mutex> lock(entry->operation_mutex);
@@ -464,6 +523,9 @@ public:
         return grpc::Status::OK;
     }
     grpc::Status Resume(grpc::ServerContext*, const CommandRequest* req, CommandResponse* resp) override {
+        std::lock_guard<std::mutex> command_lock(g_command_mutex);
+        const auto fenced = g_fences->validate(req->envelope(), false, true);
+        if (!fenced.ok()) return fenced;
         const std::string& rid = req->envelope().resource_id();
         if (const auto entry = find_session_entry(rid)) {
             std::lock_guard<std::mutex> lock(entry->operation_mutex);
@@ -476,6 +538,9 @@ public:
     }
     grpc::Status SaveResumeData(grpc::ServerContext*, const SaveResumeDataRequest* req,
                                 SaveResumeDataResponse* resp) override {
+        std::lock_guard<std::mutex> command_lock(g_command_mutex);
+        const auto fenced = g_fences->validate(req->envelope(), false, true);
+        if (!fenced.ok()) return fenced;
         const std::string& rid = req->envelope().resource_id();
         const auto entry = find_session_entry(rid);
         if (!entry) {
@@ -566,22 +631,31 @@ public:
     }
     grpc::Status RemoveTorrent(grpc::ServerContext*, const RemoveTorrentRequest* req,
                                CommandResponse* resp) override {
+        std::lock_guard<std::mutex> command_lock(g_command_mutex);
+        const auto fenced = g_fences->validate(req->envelope(), false, req->remove_unreferenced_data());
+        if (!fenced.ok()) return fenced;
         const std::string& rid = req->envelope().resource_id();
         if (const auto entry = find_session_entry(rid)) {
             std::lock_guard<std::mutex> lock(entry->operation_mutex);
-            if (!entry->removed) {
-                entry->removed = true;
-                erase_session_entry_if_current(rid, entry);
-                if (entry->ready && entry->handle.is_valid()) {
-                    if (req->remove_unreferenced_data()) {
-                        g_session->remove_torrent(entry->handle, lt::session_handle::delete_files);
-                    } else {
-                        g_session->remove_torrent(entry->handle);
-                    }
-                }
-                entry->ready = false;
-                entry->handle = lt::torrent_handle();
+            if (!entry->removing && entry->ready && entry->handle.is_valid()) {
+                entry->removing = true;
+                g_session->remove_torrent(entry->handle, req->remove_unreferenced_data()
+                        ? lt::session_handle::delete_files : lt::remove_flags_t{});
             }
+            if (entry->removing && !await_removal(entry->handle, req->remove_unreferenced_data())) {
+                std::_Exit(75); // Keep GC fail-closed if disk jobs cannot be confirmed drained.
+            }
+            if (req->remove_unreferenced_data()) {
+                // Delete the whole resource tree while the OS fence is still held.
+                // Java must never race a delayed Add by deleting this tree after ACK.
+                std::error_code cleanup_error;
+                std::filesystem::remove_all(g_download_root / "resources" / rid, cleanup_error);
+                if (cleanup_error) std::_Exit(75);
+            }
+            entry->removed = true;
+            entry->ready = false;
+            erase_session_entry_if_current(rid, entry);
+            g_fences->release_drained(rid);
         }
         resp->set_accepted(true);
         return grpc::Status::OK;
@@ -589,6 +663,9 @@ public:
     // 轮询式：会话已由 AddTorrent 挂上；元数据就绪→返回 .torrent 字节，未就绪→PENDING
     grpc::Status ResolveMetadata(grpc::ServerContext*, const magnetplatform::engine::v1::ResolveMetadataRequest* req,
                                  magnetplatform::engine::v1::ResolveMetadataResponse* resp) override {
+        std::lock_guard<std::mutex> command_lock(g_command_mutex);
+        const auto fenced = g_fences->validate(req->envelope(), false, false);
+        if (!fenced.ok()) return fenced;
         const std::string& rid = req->envelope().resource_id();
         const auto entry = find_session_entry(rid);
         if (!entry) {
@@ -625,6 +702,17 @@ public:
         lt::bencode(std::back_inserter(buf), ct.generate());
         resp->set_accepted(true);
         resp->set_torrent_file(buf.data(), buf.size());
+        if (req->envelope().owner_epoch() == 0) {
+            std::lock_guard<std::mutex> lock(entry->operation_mutex);
+            g_session->remove_torrent(entry->handle);
+            entry->removing = true;
+            if (!await_removal(entry->handle, false)) {
+                std::_Exit(75);
+            }
+            entry->removed = true;
+            erase_session_entry_if_current(rid, entry);
+            g_fences->release_drained(rid);
+        }
         std::cout << "[worker] ResolveMetadata 就绪 resource=" << rid
                   << " bytes=" << buf.size() << " files=" << ti->num_files() << std::endl;
         return grpc::Status::OK;
@@ -666,6 +754,8 @@ int main(int argc, char* argv[]) {
     std::cout << "[worker] 启动 gRPC 服务监听 " << listen_addr
               << " download-root=" << g_download_root << std::endl;
 
+    g_fences = std::make_unique<ResourceFences>(std::getenv("LOCK_ROOT") ? std::getenv("LOCK_ROOT") : "/locks");
+    std::thread([] { g_fences->watchdog(); }).detach();
     DownloadEngineImpl service;
     grpc::ServerBuilder builder;
     builder.AddListeningPort(listen_addr, grpc::InsecureServerCredentials());

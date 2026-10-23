@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -49,11 +50,13 @@ public class GrpcLibtorrentEngine implements DownloadEngine {
 
     private static final Logger log = LoggerFactory.getLogger(GrpcLibtorrentEngine.class);
 
-    private static final long OWNER_EPOCH = 1L;           // 单 Worker 硬编码；多 Worker 时从 DB 租约取
     private static final long DEADLINE_SECONDS = 30L;
 
     private final ManagedChannel channel;
     private final DownloadEngineGrpc.DownloadEngineBlockingStub stub;
+    /** P5（§12.2）：按会话记录 MySQL 租约派生的 owner_epoch，命令信封携带用于过期拒绝 */
+    private record Lease(long epoch, Instant until) {}
+    private final Map<String, Lease> sessionLeases = new ConcurrentHashMap<>();
 
     public GrpcLibtorrentEngine(
             @Value("${magnet.engine.libtorrent.grpc.endpoint:localhost:50051}") String endpoint,
@@ -70,7 +73,7 @@ public class GrpcLibtorrentEngine implements DownloadEngine {
     @PostConstruct
     public void checkHealth() {
         try {
-            DownloadEngineOuterClass.HealthResponse resp = stub.health(
+            DownloadEngineOuterClass.HealthResponse resp = rpc().health(
                     DownloadEngineOuterClass.HealthRequest.newBuilder().build());
             log.info("[grpc-libtorrent] Worker 就绪 ok={} workerId={} libtorrent={}",
                     resp.getOk(), resp.getWorkerId(), resp.getLibtorrentVersion());
@@ -92,6 +95,15 @@ public class GrpcLibtorrentEngine implements DownloadEngine {
     public EngineKind kind() { return EngineKind.LIBTORRENT; }
 
     @Override
+    public boolean available() {
+        try {
+            return rpc().health(DownloadEngineOuterClass.HealthRequest.newBuilder().build()).getOk();
+        } catch (StatusRuntimeException e) {
+            return false;
+        }
+    }
+
+    @Override
     public EngineCapabilities capabilities() {
         return new EngineCapabilities(true, true, true, false, true, true);
     }
@@ -102,11 +114,14 @@ public class GrpcLibtorrentEngine implements DownloadEngine {
     public EngineSession createOrAttach(ResourceDescriptor resource, EngineOptions options) {
         // EngineSessionId 约定即 resourceId（UUID.toString()）
         String sessionId = resource.resourceId();
+        Lease requested = new Lease(options.ownerEpoch(), options.leaseUntil());
+        Lease existing = sessionLeases.get(sessionId);
+        Lease lease = options.metadataOnly() && existing != null && existing.epoch() > 0 ? existing : requested;
 
         // torrent_file 字节由 TorrentStorage 层提供（当前 TaskService 未接入）；
         // 空 torrent_file 时传 btih/btmh/trackers，Worker 按 info_hash 挂会话走 DHT 抓元数据
         DownloadEngineOuterClass.AddTorrentRequest.Builder builder = DownloadEngineOuterClass.AddTorrentRequest.newBuilder()
-                .setEnvelope(buildEnvelope(sessionId))
+                .setEnvelope(buildEnvelope(sessionId, lease))
                 .setMetadataOnly(options.metadataOnly())
                 .setStoragePath(resolveWorkerStoragePath(resource));
         if (resource.torrentFile() != null && resource.torrentFile().length > 0) {
@@ -126,14 +141,14 @@ public class GrpcLibtorrentEngine implements DownloadEngine {
         }
         DownloadEngineOuterClass.AddTorrentRequest req = builder.build();
         try {
-            DownloadEngineOuterClass.AddTorrentResponse resp = stub.addTorrent(req);
+            DownloadEngineOuterClass.AddTorrentResponse resp = rpc().addTorrent(req);
             if (!resp.getAccepted()) {
-                log.warn("[grpc-libtorrent] AddTorrent 拒绝 resourceId={} err={}", sessionId, resp.getError());
+                throw new IllegalStateException("Worker rejected AddTorrent: " + resp.getError());
             }
         } catch (StatusRuntimeException e) {
-            log.error("[grpc-libtorrent] AddTorrent 调用失败 resourceId={} status={}",
-                    sessionId, e.getStatus().getCode(), e);
+            throw new IllegalStateException("Worker AddTorrent unavailable", e);
         }
+        sessionLeases.put(sessionId, lease);
         return new EngineSession(sessionId, EngineKind.LIBTORRENT, SessionState.DISCOVERING);
     }
 
@@ -149,41 +164,41 @@ public class GrpcLibtorrentEngine implements DownloadEngine {
                 .addAllFilePriorities(indicesToPriorities(requestedFileIndices))
                 .build();
         try {
-            UpdateFilePrioritiesResponse resp = stub.updateFilePriorities(req);
+            UpdateFilePrioritiesResponse resp = rpc().updateFilePriorities(req);
             if (!resp.getAccepted()) {
-                log.warn("[grpc-libtorrent] UpdateFilePriorities 拒绝 sessionId={} err={}",
-                        engineSessionId, resp.getError());
+                throw new IllegalStateException("Worker rejected priorities: " + resp.getError());
             }
         } catch (StatusRuntimeException e) {
-            log.warn("[grpc-libtorrent] UpdateFilePriorities 失败 sessionId={} status={}",
-                    engineSessionId, e.getStatus().getCode());
+            throw new IllegalStateException("Worker priorities unavailable", e);
         }
     }
 
     @Override
     public void pauseSession(String engineSessionId) {
         try {
-            stub.pause(DownloadEngineOuterClass.CommandRequest.newBuilder()
+            var response = rpc().pause(DownloadEngineOuterClass.CommandRequest.newBuilder()
                     .setEnvelope(buildEnvelope(engineSessionId)).build());
+            if (!response.getAccepted()) throw new IllegalStateException(response.getError());
         } catch (StatusRuntimeException e) {
-            log.warn("[grpc-libtorrent] pause 失败 sessionId={} status={}", engineSessionId, e.getStatus().getCode());
+            throw new IllegalStateException("Worker pause unavailable", e);
         }
     }
 
     @Override
     public void resumeSession(String engineSessionId) {
         try {
-            stub.resume(DownloadEngineOuterClass.CommandRequest.newBuilder()
+            var response = rpc().resume(DownloadEngineOuterClass.CommandRequest.newBuilder()
                     .setEnvelope(buildEnvelope(engineSessionId)).build());
+            if (!response.getAccepted()) throw new IllegalStateException(response.getError());
         } catch (StatusRuntimeException e) {
-            log.warn("[grpc-libtorrent] resume 失败 sessionId={} status={}", engineSessionId, e.getStatus().getCode());
+            throw new IllegalStateException("Worker resume unavailable", e);
         }
     }
 
     @Override
     public EngineSnapshot snapshot(String engineSessionId) {
         try {
-            DownloadEngineOuterClass.GetSnapshotResponse resp = stub.getSnapshot(
+            DownloadEngineOuterClass.GetSnapshotResponse resp = rpc().getSnapshot(
                     DownloadEngineOuterClass.GetSnapshotRequest.newBuilder()
                             .setEnvelope(buildEnvelope(engineSessionId)).build());
             SessionState state = SessionState.valueOf(resp.getState());
@@ -193,31 +208,29 @@ public class GrpcLibtorrentEngine implements DownloadEngine {
                     resp.getPeerCount(),
                     List.copyOf(resp.getFileVerifiedBytesList()));
         } catch (StatusRuntimeException e) {
-            log.warn("[grpc-libtorrent] getSnapshot 失败 sessionId={} status={}",
-                    engineSessionId, e.getStatus().getCode());
-            return EngineSnapshot.empty(engineSessionId);
+            throw new IllegalStateException("Worker snapshot unavailable", e);
         }
     }
 
     @Override
     public ResumeSnapshot saveResume(String engineSessionId) {
         try {
-            DownloadEngineOuterClass.SaveResumeDataResponse resp = stub.saveResumeData(
+            DownloadEngineOuterClass.SaveResumeDataResponse resp = rpc().saveResumeData(
                     DownloadEngineOuterClass.SaveResumeDataRequest.newBuilder()
                             .setEnvelope(buildEnvelope(engineSessionId)).build());
+            if (!resp.getAccepted()) throw new IllegalStateException(resp.getError());
             return new ResumeSnapshot(engineSessionId, resp.getResumeVersion(),
                     resp.getResumeData().toByteArray());
         } catch (StatusRuntimeException e) {
-            log.warn("[grpc-libtorrent] saveResume 失败 sessionId={} status={}",
-                    engineSessionId, e.getStatus().getCode());
-            return new ResumeSnapshot(engineSessionId, 0L, new byte[0]);
+            throw new IllegalStateException("Worker resume snapshot unavailable", e);
         }
     }
 
     @Override
     public byte[] fetchMetadata(String engineSessionId) {
+        if (!sessionLeases.containsKey(engineSessionId)) return new byte[0];
         try {
-            DownloadEngineOuterClass.ResolveMetadataResponse resp = stub.resolveMetadata(
+            DownloadEngineOuterClass.ResolveMetadataResponse resp = rpc().resolveMetadata(
                     DownloadEngineOuterClass.ResolveMetadataRequest.newBuilder()
                             .setEnvelope(buildEnvelope(engineSessionId)).build());
             if (!resp.getAccepted() || resp.getTorrentFile().isEmpty()) {
@@ -234,12 +247,13 @@ public class GrpcLibtorrentEngine implements DownloadEngine {
     @Override
     public void removeSession(String engineSessionId, boolean removeUnreferencedData) {
         try {
-            stub.removeTorrent(DownloadEngineOuterClass.RemoveTorrentRequest.newBuilder()
+            var response = rpc().removeTorrent(DownloadEngineOuterClass.RemoveTorrentRequest.newBuilder()
                     .setEnvelope(buildEnvelope(engineSessionId))
                     .setRemoveUnreferencedData(removeUnreferencedData).build());
+            if (!response.getAccepted()) throw new IllegalStateException(response.getError());
+            sessionLeases.remove(engineSessionId);
         } catch (StatusRuntimeException e) {
-            log.warn("[grpc-libtorrent] removeTorrent 失败 sessionId={} status={}",
-                    engineSessionId, e.getStatus().getCode());
+            throw new IllegalStateException("Worker removal unavailable", e);
         }
     }
 
@@ -267,15 +281,32 @@ public class GrpcLibtorrentEngine implements DownloadEngine {
         return normalized;
     }
 
+    @Override
+    public void renewLease(String sessionId, long ownerEpoch, Instant leaseUntil) {
+        sessionLeases.put(sessionId, new Lease(ownerEpoch, leaseUntil));
+    }
+
+    private DownloadEngineGrpc.DownloadEngineBlockingStub rpc() {
+        return stub.withDeadlineAfter(5, TimeUnit.SECONDS);
+    }
+
     private CommandEnvelope buildEnvelope(String resourceId) {
+        Lease lease = sessionLeases.get(resourceId);
+        if (lease == null) throw new IllegalStateException("No lease for resource " + resourceId);
+        return buildEnvelope(resourceId, lease);
+    }
+
+    private CommandEnvelope buildEnvelope(String resourceId, Lease lease) {
         Instant deadline = Instant.now().plusSeconds(DEADLINE_SECONDS);
+        if (lease.until().isBefore(deadline)) deadline = lease.until();
         return CommandEnvelope.newBuilder()
                 .setCommandId(UUID.randomUUID().toString())
                 .setResourceId(resourceId)
-                .setOwnerEpoch(OWNER_EPOCH)
+                .setOwnerEpoch(lease.epoch())
+                .setLeaseUntil(com.google.protobuf.Timestamp.newBuilder()
+                        .setSeconds(lease.until().getEpochSecond()).setNanos(lease.until().getNano()).build())
                 .setDeadline(com.google.protobuf.Timestamp.newBuilder()
-                        .setSeconds(deadline.getEpochSecond())
-                        .setNanos(deadline.getNano()).build())
+                        .setSeconds(deadline.getEpochSecond()).setNanos(deadline.getNano()).build())
                 .build();
     }
 

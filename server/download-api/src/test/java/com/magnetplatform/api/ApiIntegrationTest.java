@@ -319,6 +319,44 @@ class ApiIntegrationTest {
     }
 
     @Test
+    void expiredLeaseCannotRenewAndTakeoverRejectsOldOwner() throws IOException {
+        String token = (String) post("/api/v1/auth/register",
+                Map.of("username", "lease_user", "password", "password123"), null).getBody().get("token");
+        byte[] torrent = minimalTwoFileV1Torrent();
+        torrent[torrent.length - 3] = 42; // 与其他测试资源隔离的合法 piece hash
+        UUID resourceId = UUID.fromString((String) uploadTorrent(token, torrent)
+                .getBody().get("resourceId"));
+        LocalDateTime now = LocalDateTime.now(java.time.ZoneOffset.UTC);
+        sessionRepository.insertIfAbsent(new EngineSessionRecord(resourceId, resourceId, "expired",
+                "LIBTORRENT", "ACTIVE", 3L, now.minusMinutes(1), 0L, now, now));
+        assertThat(sessionRepository.renewLease(resourceId, "LIBTORRENT", "expired", 3L, 30)).isFalse();
+        EngineSessionRecord acquired = sessionRepository.acquireLease(resourceId, "LIBTORRENT", "replacement", 30)
+                .orElseThrow();
+        assertThat(acquired.getOwnerEpoch()).isEqualTo(4L);
+        assertThat(sessionRepository.updateState(resourceId, "STOPPED", now, "expired", 3L)).isFalse();
+        assertThat(sessionRepository.updateResume(resourceId, 999L, "stale", now, "expired", 3L)).isFalse();
+        assertThat(sessionRepository.acquireLease(resourceId, "LIBTORRENT", "competitor", 30)).isEmpty();
+        assertThat(sessionRepository.renewLease(resourceId, "LIBTORRENT", "expired", 3L, 30)).isFalse();
+        assertThat(sessionRepository.updateState(resourceId, "STOPPED", now, "replacement", 4L)).isTrue();
+        assertThat(sessionRepository.renewLease(resourceId, "LIBTORRENT", "replacement", 4L, 30)).isFalse();
+        EngineSessionRecord next = sessionRepository.acquireLease(resourceId, "LIBTORRENT", "replacement", 30)
+                .orElseThrow();
+        assertThat(next.getOwnerEpoch()).isEqualTo(5L);
+        java.util.concurrent.atomic.AtomicBoolean wrote = new java.util.concurrent.atomic.AtomicBoolean();
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> sessionRepository.withLease(next, () -> wrote.set(true)));
+        assertThat(wrote.get()).isFalse(); // STOPPED 代次不能继续写入。
+        assertThat(sessionRepository.updateState(resourceId, "DISCOVERING", now, "replacement", 5L)).isTrue();
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> sessionRepository.withLease(next, () -> {
+                    sessionRepository.updateResume(resourceId, 100L, "rolled-back", now, "replacement", 5L);
+                    throw new IllegalStateException("simulate failed resource write");
+                }));
+        assertThat(sessionRepository.findByResource(resourceId, "LIBTORRENT").orElseThrow().getResumeVersion())
+                .isZero();
+    }
+
+    @Test
     void sharedSessionAcrossTwoUsersAndDemandUnion() throws IOException {
         post("/api/v1/auth/register", Map.of("username", "shared_admin", "password", "password123"), null);
         String tokenA = (String) post("/api/v1/auth/register",

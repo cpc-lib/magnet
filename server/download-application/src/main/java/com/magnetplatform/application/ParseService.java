@@ -180,8 +180,21 @@ public class ParseService {
         }
         int completed = 0;
         for (ParseJob job : parseJobs.findByStatus(ParseStatus.RESOLVING, 50)) {
+            TorrentResource current = resources.findById(job.getResourceId()).orElse(null);
+            if (current == null) continue;
+            if (current.metadataReady()) {
+                parseJobs.markStatus(job.getId(), ParseStatus.READY, null, null);
+                completed++;
+                continue;
+            }
             byte[] torrentBytes = engine.fetchMetadata(job.getResourceId().toString());
             if (torrentBytes.length == 0) {
+                try {
+                    dispatchResolve(current);
+                } catch (DomainException e) {
+                    // 另一 Worker 可能仍持有元数据锁；保留 RESOLVING 待后续轮次。
+                    log.debug("元数据会话暂不可挂载 resource={}", current.getId(), e);
+                }
                 continue; // 未就绪（PENDING）或会话不存在
             }
             try {

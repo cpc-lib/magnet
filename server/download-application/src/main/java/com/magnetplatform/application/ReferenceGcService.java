@@ -35,6 +35,8 @@ public class ReferenceGcService {
     private final DownloadStorage storage;
     private final List<DownloadEngine> engines;
     private final long graceSeconds;
+    private final String workerId;
+    private final int leaseSeconds;
 
     public ReferenceGcService(DownloadTaskRepository tasks,
                               FileExportRepository exports,
@@ -42,7 +44,9 @@ public class ReferenceGcService {
                               EngineSessionRepository sessions,
                               DownloadStorage storage,
                               List<DownloadEngine> engines,
-                              @Value("${magnet.gc.grace-seconds:300}") long graceSeconds) {
+                              @Value("${magnet.gc.grace-seconds:300}") long graceSeconds,
+                              @Value("${magnet.worker.id:local-worker-1}") String workerId,
+                              @Value("${magnet.worker.lease-seconds:30}") int leaseSeconds) {
         this.tasks = tasks;
         this.exports = exports;
         this.gc = gc;
@@ -50,6 +54,8 @@ public class ReferenceGcService {
         this.storage = storage;
         this.engines = engines;
         this.graceSeconds = graceSeconds;
+        this.workerId = workerId;
+        this.leaseSeconds = leaseSeconds;
     }
 
     /** 扫描有会话的资源，对无引用者标记 GC 候选（宽限期后才真正删除）。 */
@@ -70,7 +76,6 @@ public class ReferenceGcService {
     }
 
     /** 清扫到期候选：复核无引用后删除引擎会话与物理数据（规格 §10.2 容错：异常保留候选待下次）。 */
-    @Transactional
     public void sweep() {
         LocalDateTime now = LocalDateTime.now();
         for (UUID resourceId : gc.findDue(now, 50)) {
@@ -82,21 +87,39 @@ public class ReferenceGcService {
             try {
                 EngineSessionRecord session = sessions.findByResource(resourceId, EngineKind.LIBTORRENT.name())
                         .orElse(null);
-                if (session != null) {
-                    DownloadEngine engine = libtorrentEngine();
-                    if (engine != null) {
-                        engine.removeSession(session.getId().toString(), true);
+                DownloadEngine reachable = libtorrentEngine();
+                if (reachable == null || !reachable.available()) {
+                    throw new IllegalStateException("Worker unavailable for GC");
+                }
+                if (session == null || !workerId.equals(session.getWorkerId())
+                        || !sessions.renewLease(resourceId, EngineKind.LIBTORRENT.name(), workerId,
+                                session.getOwnerEpoch(), leaseSeconds)) {
+                    throw new IllegalStateException("GC requires a live owned resource lease");
+                }
+                EngineSessionRecord owned = sessions.findByResource(resourceId, EngineKind.LIBTORRENT.name()).orElseThrow();
+                sessions.withLease(session, () -> {
+                    if (tasks.countNonDeletedByResource(resourceId) > 0
+                            || exports.countActiveByResource(resourceId) > 0) {
+                        gc.removeCandidate(resourceId);
+                        return;
                     }
-                }
-                storage.deleteTree(storage.resourceRoot(resourceId));
-                java.nio.file.Path resume = storage.resumeFile(resourceId);
-                try {
-                    java.nio.file.Files.deleteIfExists(resume);
-                } catch (java.io.IOException ignored) {
-                    // resume 文件删除失败不阻塞资源目录回收
-                }
-                gc.removeCandidate(resourceId);
-                log.info("[gc] 回收资源物理数据完成 resource={}", resourceId);
+                    DownloadEngine engine = libtorrentEngine();
+                    if (engine == null) throw new IllegalStateException("Worker unavailable for GC");
+                    engine.renewLease(resourceId.toString(), owned.getOwnerEpoch(),
+                            owned.getLeaseUntil().toInstant(java.time.ZoneOffset.UTC));
+                    engine.removeSession(session.getId().toString(), true);
+                    java.nio.file.Path resume = storage.resumeFile(resourceId);
+                    try {
+                        java.nio.file.Files.deleteIfExists(resume);
+                    } catch (java.io.IOException ignored) {
+                        // resume 文件删除失败不阻塞资源目录回收
+                    }
+                    gc.removeCandidate(resourceId);
+                    if (!sessions.updateState(session.getId(), "STOPPED", now, workerId, session.getOwnerEpoch())) {
+                        throw new IllegalStateException("GC ownership lost");
+                    }
+                    log.info("[gc] 回收资源物理数据完成 resource={}", resourceId);
+                });
             } catch (RuntimeException e) {
                 gc.recordFailure(resourceId, e.getMessage(), now);
                 log.warn("[gc] 回收资源失败 resource={}: {}", resourceId, e.getMessage());

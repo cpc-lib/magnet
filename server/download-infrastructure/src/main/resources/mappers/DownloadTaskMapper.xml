@@ -110,7 +110,6 @@
         UPDATE download_task_file
         SET verified_bytes = #{verifiedBytes}
         WHERE task_id = #{taskId} AND file_index = #{fileIndex}
-          AND verified_bytes &lt;= #{verifiedBytes}
     </update>
 
     <select id="countNonDeletedByResource" resultType="long">

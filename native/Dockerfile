@@ -39,8 +39,9 @@ EXPOSE 50051
 
 ENV WORKER_ID=local-worker-1
 ENV DOWNLOAD_ROOT=/data
+ENV LOCK_ROOT=/locks
 
-VOLUME ["/data"]
+VOLUME ["/data", "/locks"]
 
 # 默认监听全网卡，端口 50051；health 就绪探针可通
 CMD ["/workspace/build/libtorrent-worker", "--port=50051", "--download-root=/data"]

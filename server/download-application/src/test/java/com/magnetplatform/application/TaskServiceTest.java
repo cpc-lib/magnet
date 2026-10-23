@@ -118,7 +118,7 @@ class TaskServiceTest {
             }
             for (int i = 0; i < list.size(); i++) {
                 DownloadTaskFile f = list.get(i);
-                if (f.getFileIndex() == fileIndex && f.getVerifiedBytes() <= verifiedBytes) {
+                if (f.getFileIndex() == fileIndex) {
                     list.set(i, new DownloadTaskFile(f.getId(), f.getTaskId(), f.getFileIndex(),
                             f.isSelected(), verifiedBytes, f.getExportState()));
                     return;
@@ -196,7 +196,11 @@ class TaskServiceTest {
     }
 
     static class RecordingEngine implements DownloadEngine {
+        boolean available = true;
+
+        public boolean available() { return available; }
         ResourceDescriptor resource;
+        EngineOptions lastOptions;
         int createCalls;
         Set<Integer> lastDemand;
         boolean paused;
@@ -215,6 +219,7 @@ class TaskServiceTest {
         public EngineSession createOrAttach(ResourceDescriptor resource, EngineOptions options) {
             createCalls++;
             this.resource = resource;
+            this.lastOptions = options;
             return new EngineSession(resource.resourceId(), EngineKind.LIBTORRENT, SessionState.DISCOVERING);
         }
 
@@ -243,7 +248,10 @@ class TaskServiceTest {
     }
 
     static class InMemorySessions implements EngineSessionRepository {
+        public void lockResource(UUID resourceId) {
+        }
         final Map<String, EngineSessionRecord> byKey = new HashMap<>();
+        boolean failRenewals;
 
         public Optional<EngineSessionRecord> findByResource(UUID resourceId, String engineType) {
             return Optional.ofNullable(byKey.get(resourceId + ":" + engineType));
@@ -253,34 +261,87 @@ class TaskServiceTest {
             byKey.put(record.getResourceId() + ":" + record.getEngineType(), record);
         }
 
-        public void updateState(UUID id, String state, LocalDateTime updatedAt) {
+        public boolean updateState(UUID id, String state, LocalDateTime updatedAt, String workerId, long ownerEpoch) {
             for (Map.Entry<String, EngineSessionRecord> e : byKey.entrySet()) {
-                if (e.getValue().getId().equals(id)) {
+                if (e.getValue().getId().equals(id) && e.getValue().getWorkerId().equals(workerId)
+                        && e.getValue().getOwnerEpoch() == ownerEpoch) {
                     EngineSessionRecord r = e.getValue();
                     e.setValue(new EngineSessionRecord(r.getId(), r.getResourceId(), r.getWorkerId(),
                             r.getEngineType(), state, r.getOwnerEpoch(), r.getLeaseUntil(),
                             r.getResumeVersion(), r.getCreatedAt(), updatedAt, r.getResumePath()));
-                    return;
+                    return true;
                 }
             }
+            return false;
         }
 
-        public void updateResume(UUID id, long resumeVersion, String resumePath, LocalDateTime updatedAt) {
+        public boolean updateResume(UUID id, long resumeVersion, String resumePath, LocalDateTime updatedAt, String workerId, long ownerEpoch) {
             for (Map.Entry<String, EngineSessionRecord> e : byKey.entrySet()) {
-                if (e.getValue().getId().equals(id)) {
+                if (e.getValue().getId().equals(id) && e.getValue().getWorkerId().equals(workerId)
+                        && e.getValue().getOwnerEpoch() == ownerEpoch) {
                     EngineSessionRecord r = e.getValue();
                     e.setValue(new EngineSessionRecord(r.getId(), r.getResourceId(), r.getWorkerId(),
                             r.getEngineType(), r.getState(), r.getOwnerEpoch(), r.getLeaseUntil(),
                             resumeVersion, r.getCreatedAt(), updatedAt, resumePath));
-                    return;
+                    return true;
                 }
             }
+            return false;
         }
 
         public List<EngineSessionRecord> findRecoverable() {
             return byKey.values().stream()
                     .filter(r -> !"STOPPED".equals(r.getState()) && !"FAILED".equals(r.getState()))
                     .toList();
+        }
+
+        public boolean insertIfAbsent(EngineSessionRecord record) {
+            String key = record.getResourceId() + ":" + record.getEngineType();
+            if (byKey.containsKey(key)) {
+                return false;
+            }
+            byKey.put(key, record);
+            return true;
+        }
+
+        public boolean renewLease(UUID resourceId, String engineType, String workerId,
+                                  long ownerEpoch, int leaseSeconds) {
+            if (failRenewals) {
+                return false;
+            }
+            EngineSessionRecord r = byKey.get(resourceId + ":" + engineType);
+            if (r == null || !r.getWorkerId().equals(workerId) || r.getOwnerEpoch() != ownerEpoch
+                    || r.getLeaseUntil() == null || !r.getLeaseUntil().isAfter(LocalDateTime.now())) {
+                return false;
+            }
+            byKey.put(resourceId + ":" + engineType,
+                    withLease(r, workerId, r.getOwnerEpoch(), LocalDateTime.now().plusSeconds(leaseSeconds)));
+            return true;
+        }
+
+        public Optional<EngineSessionRecord> acquireLease(UUID resourceId, String engineType,
+                                                          String workerId, int leaseSeconds) {
+            String key = resourceId + ":" + engineType;
+            EngineSessionRecord r = byKey.get(key);
+            if (r == null) {
+                return Optional.empty();
+            }
+            LocalDateTime now = LocalDateTime.now();
+            boolean free = r.getLeaseUntil() == null || r.getLeaseUntil().isBefore(now);
+            if (!free) {
+                return Optional.empty();
+            }
+            EngineSessionRecord updated = withLease(r, workerId, r.getOwnerEpoch() + 1,
+                    now.plusSeconds(leaseSeconds));
+            byKey.put(key, updated);
+            return Optional.of(updated);
+        }
+
+        private static EngineSessionRecord withLease(EngineSessionRecord r, String workerId,
+                                                     long ownerEpoch, LocalDateTime leaseUntil) {
+            return new EngineSessionRecord(r.getId(), r.getResourceId(), workerId, r.getEngineType(),
+                    r.getState(), ownerEpoch, leaseUntil, r.getResumeVersion(),
+                    r.getCreatedAt(), LocalDateTime.now(), r.getResumePath());
         }
     }
 
@@ -355,7 +416,7 @@ class TaskServiceTest {
         torrentStorage = new FakeTorrentStorage();
         downloadStorage = new FakeDownloadStorage();
         service = new TaskService(tasks, events, sessions, parseJobs, resources,
-                torrentStorage, downloadStorage, List.of());
+                torrentStorage, downloadStorage, List.of(), "local-worker-1", 30);
         alice = UUID.randomUUID();
         bob = UUID.randomUUID();
         resourceId = UUID.randomUUID();
@@ -377,7 +438,7 @@ class TaskServiceTest {
                 LocalDateTime.now(), torrentStorage.path));
         RecordingEngine engine = new RecordingEngine();
         service = new TaskService(tasks, events, sessions, parseJobs, resources,
-                torrentStorage, downloadStorage, List.of(engine));
+                torrentStorage, downloadStorage, List.of(engine), "local-worker-1", 30);
 
         service.create(alice, parseId, List.of(0), null, true, null);
         service.dispatchTick(1);
@@ -392,7 +453,7 @@ class TaskServiceTest {
     void dispatchQueuedTaskFailsInputLostWhenMetadataPathMissing() {
         RecordingEngine engine = new RecordingEngine();
         service = new TaskService(tasks, events, sessions, parseJobs, resources,
-                torrentStorage, downloadStorage, List.of(engine));
+                torrentStorage, downloadStorage, List.of(engine), "local-worker-1", 30);
 
         DownloadTask queued = service.create(alice, parseId, List.of(0), null, true, null);
         service.dispatchTick(1);
@@ -417,7 +478,7 @@ class TaskServiceTest {
         };
         RecordingEngine engine = new RecordingEngine();
         service = new TaskService(tasks, events, sessions, parseJobs, resources,
-                emptyStorage, downloadStorage, List.of(engine));
+                emptyStorage, downloadStorage, List.of(engine), "local-worker-1", 30);
 
         DownloadTask queued = service.create(alice, parseId, List.of(0), null, true, null);
         service.dispatchTick(1);
@@ -433,7 +494,7 @@ class TaskServiceTest {
     void dispatchQueuedTaskFailsInputLostWhenResourceIsMissing() {
         RecordingEngine engine = new RecordingEngine();
         service = new TaskService(tasks, events, sessions, parseJobs, resources,
-                torrentStorage, downloadStorage, List.of(engine));
+                torrentStorage, downloadStorage, List.of(engine), "local-worker-1", 30);
 
         DownloadTask queued = service.create(alice, parseId, List.of(0), null, true, null);
         resources.byId.remove(resourceId);
@@ -568,7 +629,7 @@ class TaskServiceTest {
                 VersionType.V1, "demo", 16384L, 150L, false, "TORRENT", List.of(), 2,
                 LocalDateTime.now(), torrentStorage.path));
         return new TaskService(tasks, events, sessions, parseJobs, resources,
-                torrentStorage, downloadStorage, List.of(engine));
+                torrentStorage, downloadStorage, List.of(engine), "local-worker-1", 30);
     }
 
     @Test
@@ -674,6 +735,148 @@ class TaskServiceTest {
         service.dispatchTick(1); // 第二次快照确认 → COMPLETED
         assertEquals(TaskStatus.COMPLETED, tasks.findById(task.getId()).orElseThrow().getStatus());
         assertEquals(150L, tasks.findById(task.getId()).orElseThrow().getVerifiedBytes());
+    }
+
+    // ---------- P5 租约与 Fencing（规格 §12.2） ----------
+
+    @Test
+    void authoritativeRecheckCanReducePreviouslyVerifiedFileProgress() {
+        RecordingEngine engine = new RecordingEngine();
+        engine.snapshot = new EngineSnapshot("s", SessionState.ACTIVE, true,
+                90L, 0L, 0L, 0, List.of(90L, 0L));
+        service = serviceWithEngine(engine);
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+        engine.snapshot = new EngineSnapshot("s", SessionState.ACTIVE, true,
+                20L, 0L, 0L, 0, List.of(20L, 0L));
+        service.dispatchTick(1);
+        assertEquals(20L, tasks.findFiles(task.getId()).get(0).getVerifiedBytes());
+        assertEquals(20L, tasks.findById(task.getId()).orElseThrow().getVerifiedBytes());
+    }
+
+    @Test
+    void unavailableWorkerCannotKeepRenewingLeaseWhileApiIsAlive() {
+        RecordingEngine engine = new RecordingEngine();
+        service = serviceWithEngine(engine);
+        service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+        EngineSessionRecord before = sessions.findByResource(resourceId, "LIBTORRENT").orElseThrow();
+        engine.available = false;
+        service.dispatchTick(1);
+        assertEquals(before.getLeaseUntil(), sessions.findByResource(resourceId, "LIBTORRENT")
+                .orElseThrow().getLeaseUntil());
+
+        sessions.insert(InMemorySessions.withLease(before, "local-worker-1", before.getOwnerEpoch(),
+                LocalDateTime.now().minusSeconds(1)));
+        RecordingEngine replacement = new RecordingEngine();
+        TaskService other = new TaskService(tasks, events, sessions, parseJobs, resources,
+                torrentStorage, downloadStorage, List.of(replacement), "worker-2", 30);
+        other.dispatchTick(1);
+        assertEquals(before.getOwnerEpoch() + 1, replacement.lastOptions.ownerEpoch());
+        assertEquals("worker-2", sessions.findByResource(resourceId, "LIBTORRENT").orElseThrow().getWorkerId());
+    }
+
+    @Test
+    void expiredSelfLeaseIsReacquiredForActiveDownload() {
+        RecordingEngine engine = new RecordingEngine();
+        engine.snapshot = new EngineSnapshot("s", SessionState.ACTIVE, true,
+                0L, 0L, 0L, 0, List.of(0L, 0L));
+        service = serviceWithEngine(engine);
+        service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+        EngineSessionRecord before = sessions.findByResource(resourceId, "LIBTORRENT").orElseThrow();
+        sessions.insert(InMemorySessions.withLease(before, "local-worker-1", before.getOwnerEpoch(),
+                LocalDateTime.now().minusSeconds(1)));
+
+        service.dispatchTick(1);
+
+        assertEquals(before.getOwnerEpoch() + 1, engine.lastOptions.ownerEpoch());
+        assertNotNull(engine.lastOptions.leaseUntil());
+    }
+
+    @Test
+    void secondSchedulerDoesNotDriveLiveForeignSession() {
+        RecordingEngine first = new RecordingEngine();
+        service = serviceWithEngine(first);
+        service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+        RecordingEngine second = new RecordingEngine();
+        TaskService other = new TaskService(tasks, events, sessions, parseJobs, resources,
+                torrentStorage, downloadStorage, List.of(second), "worker-2", 30);
+
+        other.dispatchTick(1);
+
+        assertEquals(0, second.createCalls);
+        assertNull(second.lastDemand);
+        assertFalse(second.paused);
+    }
+
+    @Test
+    void leaseRenewFailureFencesSessionStopsWriting() {
+        RecordingEngine engine = new RecordingEngine();
+        engine.snapshot = new EngineSnapshot("s", SessionState.ACTIVE, true,
+                0L, 0L, 0L, 0, List.of(0L, 0L));
+        service = serviceWithEngine(engine);
+
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+        assertEquals(TaskStatus.DOWNLOADING, tasks.findById(task.getId()).orElseThrow().getStatus());
+
+        // 模拟租约丢失（被其他控制实例接管）：续租 CAS 失败 → 必须停止写（fail-closed）
+        engine.lastDemand = null;
+        engine.paused = false;
+        sessions.failRenewals = true;
+        service.dispatchTick(1);
+
+        assertFalse(engine.paused, "失去租约后不得再向共享会话下发命令，由 Worker 看门狗终止旧进程");
+        assertFalse(downloadStorage.writeResumeCalled, "失去租约后不得写共享 resume");
+        assertEquals(SessionState.ACTIVE.name(),
+                sessions.findByResource(resourceId, EngineKind.LIBTORRENT.name()).orElseThrow().getState());
+        assertNull(engine.lastDemand, "续租失败后不得继续下发需求");
+    }
+
+    @Test
+    void takeoverExpiredForeignLeaseReattachesWithIncrementedEpoch() {
+        RecordingEngine engine = new RecordingEngine();
+        engine.snapshot = new EngineSnapshot("s", SessionState.ACTIVE, true,
+                0L, 0L, 0L, 0, List.of(0L, 0L));
+        service = serviceWithEngine(engine);
+
+        // 他人（w2）持有的已过期租约，epoch=3
+        sessions.insert(new EngineSessionRecord(resourceId, resourceId, "w2",
+                EngineKind.LIBTORRENT.name(), SessionState.ACTIVE.name(), 3L,
+                LocalDateTime.now().minusMinutes(5), 0L, LocalDateTime.now(), LocalDateTime.now()));
+
+        service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+
+        // 接管成功：epoch 单调 +1，重新挂载携带新 epoch
+        assertEquals(4L, engine.lastOptions.ownerEpoch(), "接管后 createOrAttach 必须携带新 epoch");
+        EngineSessionRecord leased = sessions.findByResource(resourceId, EngineKind.LIBTORRENT.name())
+                .orElseThrow();
+        assertEquals("local-worker-1", leased.getWorkerId());
+        assertEquals(4L, leased.getOwnerEpoch());
+        assertEquals(1, engine.createCalls);
+    }
+
+    @Test
+    void validForeignLeaseFailsClosedTaskStaysQueued() {
+        RecordingEngine engine = new RecordingEngine();
+        service = serviceWithEngine(engine);
+
+        // 他人（w2）持有有效租约
+        sessions.insert(new EngineSessionRecord(resourceId, resourceId, "w2",
+                EngineKind.LIBTORRENT.name(), SessionState.ACTIVE.name(), 3L,
+                LocalDateTime.now().plusSeconds(60), 0L, LocalDateTime.now(), LocalDateTime.now()));
+
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+
+        // fail-closed：抢不到租约不写引擎；瞬态冲突任务保持 QUEUED 等待下轮，不判 FAILED
+        assertEquals(0, engine.createCalls, "他人持有有效租约时不得挂载引擎");
+        DownloadTask queued = tasks.findById(task.getId()).orElseThrow();
+        assertEquals(TaskStatus.QUEUED, queued.getStatus());
+        assertEquals(ErrorCodes.WORKER_UNAVAILABLE, queued.getErrorCode());
     }
 
     private static void assertCode(String code, Executable executable) {

@@ -137,6 +137,8 @@ class ReferenceGcServiceTest {
     }
 
     static class StubSessions implements EngineSessionRepository {
+        public void lockResource(UUID resourceId) {
+        }
         final Map<UUID, EngineSessionRecord> byResource = new HashMap<>();
 
         public Optional<EngineSessionRecord> findByResource(UUID resourceId, String engineType) {
@@ -146,14 +148,30 @@ class ReferenceGcServiceTest {
         public void insert(EngineSessionRecord record) {
         }
 
-        public void updateState(UUID id, String state, LocalDateTime updatedAt) {
+        public boolean updateState(UUID id, String state, LocalDateTime updatedAt, String workerId, long ownerEpoch) {
+            return true;
         }
 
-        public void updateResume(UUID id, long resumeVersion, String resumePath, LocalDateTime updatedAt) {
+        public boolean updateResume(UUID id, long resumeVersion, String resumePath, LocalDateTime updatedAt, String workerId, long ownerEpoch) {
+            return true;
         }
 
         public List<EngineSessionRecord> findRecoverable() {
             return new ArrayList<>(byResource.values());
+        }
+
+        public boolean insertIfAbsent(EngineSessionRecord record) {
+            return byResource.putIfAbsent(record.getResourceId(), record) == null;
+        }
+
+        public boolean renewLease(UUID resourceId, String engineType, String workerId,
+                                  long ownerEpoch, int leaseSeconds) {
+            return true;
+        }
+
+        public Optional<EngineSessionRecord> acquireLease(UUID resourceId, String engineType,
+                                                          String workerId, int leaseSeconds) {
+            return findByResource(resourceId, engineType);
         }
     }
 
@@ -247,10 +265,10 @@ class ReferenceGcServiceTest {
         sessions = new StubSessions();
         storage = new FakeStorage();
         engine = new RecordingEngine();
-        service = new ReferenceGcService(tasks, exports, gc, sessions, storage, List.of(engine), 0L);
+        service = new ReferenceGcService(tasks, exports, gc, sessions, storage, List.of(engine), 0L, "w1", 30);
         resourceId = UUID.randomUUID();
         sessions.byResource.put(resourceId, new EngineSessionRecord(UUID.randomUUID(), resourceId,
-                "w1", EngineKind.LIBTORRENT.name(), SessionState.IDLE.name(), 1L, null, 0L,
+                "w1", EngineKind.LIBTORRENT.name(), SessionState.IDLE.name(), 1L, LocalDateTime.now().plusSeconds(30), 0L,
                 LocalDateTime.now(), LocalDateTime.now()));
     }
 
@@ -281,8 +299,21 @@ class ReferenceGcServiceTest {
 
         assertTrue(engine.removeCalled, "应调用引擎 removeSession");
         assertTrue(engine.removeData, "应删除共享数据");
-        assertTrue(storage.treeDeleted, "应删除资源物理目录");
+        assertFalse(storage.treeDeleted, "资源目录由 Worker 在持有物理锁时清理，Java 不得在 ACK 后裸删");
         assertTrue(gc.removed.contains(resourceId), "应移除 GC 候选");
+    }
+
+    @Test
+    void foreignLeaseDoesNotAllowGcToDeleteSharedFiles() {
+        EngineSessionRecord current = sessions.byResource.get(resourceId);
+        sessions.byResource.put(resourceId, new EngineSessionRecord(current.getId(), resourceId, "other",
+                "LIBTORRENT", "ACTIVE", 2L, LocalDateTime.now().plusSeconds(30), 0L,
+                LocalDateTime.now(), LocalDateTime.now()));
+        service.markCandidates();
+        service.sweep();
+        assertFalse(engine.removeCalled);
+        assertFalse(storage.treeDeleted);
+        assertTrue(gc.failures.containsKey(resourceId));
     }
 
     @Test

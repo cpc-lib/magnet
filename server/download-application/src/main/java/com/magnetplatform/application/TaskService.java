@@ -27,6 +27,7 @@ import com.magnetplatform.spi.SessionState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +36,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -58,6 +60,9 @@ public class TaskService {
     private final TorrentStorage torrentStorage;
     private final DownloadStorage downloadStorage;
     private final List<DownloadEngine> engines;
+    private final String workerId;
+    private final int leaseSeconds;
+    private final Set<UUID> attachedResources = new HashSet<>();
 
     @Autowired
     public TaskService(DownloadTaskRepository tasks,
@@ -67,7 +72,9 @@ public class TaskService {
                        TorrentResourceRepository resources,
                        TorrentStorage torrentStorage,
                        DownloadStorage downloadStorage,
-                       List<DownloadEngine> engines) {
+                       List<DownloadEngine> engines,
+                       @Value("${magnet.worker.id:local-worker-1}") String workerId,
+                       @Value("${magnet.worker.lease-seconds:30}") int leaseSeconds) {
         this.tasks = tasks;
         this.events = events;
         this.sessions = sessions;
@@ -76,6 +83,8 @@ public class TaskService {
         this.torrentStorage = torrentStorage;
         this.downloadStorage = downloadStorage;
         this.engines = engines;
+        this.workerId = workerId;
+        this.leaseSeconds = leaseSeconds;
     }
 
     // ---------- 用户命令 ----------
@@ -106,6 +115,7 @@ public class TaskService {
                 .map(f -> new DownloadTaskFile(UUID.randomUUID(), task.getId(), f.getFileIndex(),
                         indices.contains(f.getFileIndex()), 0L, "NONE"))
                 .toList();
+        sessions.lockResource(resource.getId());
         tasks.insert(task, taskFiles);
         events.append(task.getId(), "TASK_CREATED",
                 "{\"selectedBytes\":" + selectedBytes + ",\"fileCount\":" + indices.size() + "}");
@@ -215,8 +225,7 @@ public class TaskService {
     // ---------- 调度器协同（TaskDispatcher 调用） ----------
 
     /** 扫描待调度任务：恢复会话、QUEUED 启动、PAUSING 收需求、RETRY_WAIT 重入队、活跃任务刷进度 */
-    @Transactional
-    public void dispatchTick(int maxActivePerUser) {
+    public synchronized void dispatchTick(int maxActivePerUser) {
         // 0. 重启恢复：重新挂载可恢复会话到引擎（规格 §12.1）
         recoverSessions();
         LocalDateTime now = LocalDateTime.now();
@@ -247,27 +256,44 @@ public class TaskService {
                 transition(current, TaskStatus.DOWNLOADING);
                 events.append(t.getId(), "STATUS", "{\"status\":\"DOWNLOADING\"}");
             } catch (DomainException e) {
-                DownloadTask withError = update(t.withError(e.code(), e.getMessage(), now));
-                transition(withError, TaskStatus.FAILED);
-                events.append(t.getId(), "STATUS",
-                        "{\"status\":\"FAILED\",\"errorCode\":\"" + e.code() + "\"}");
+                if (ErrorCodes.WORKER_UNAVAILABLE.equals(e.code())) {
+                    // 瞬态冲突（他人持有有效租约/引擎未接入）：保持 QUEUED 下轮重试，fail-closed（规格 §12.2）
+                    log.info("任务 {} 暂时无法启动: {}", t.getId(), e.getMessage());
+                    update(t.withError(e.code(), e.getMessage(), now));
+                } else {
+                    DownloadTask withError = update(t.withError(e.code(), e.getMessage(), now));
+                    transition(withError, TaskStatus.FAILED);
+                    events.append(t.getId(), "STATUS",
+                            "{\"status\":\"FAILED\",\"errorCode\":\"" + e.code() + "\"}");
+                }
             }
         }
         // 4. 每个活跃资源：需求并集下发 + 快照刷新进度
         pushDemandAndRefreshProgress();
     }
 
-    /** 重启恢复：扫描可恢复会话并重新挂载到引擎（规格 §12.1）。
-     * 每个会话加载资源元数据与 resume 字节后调用 createOrAttach，缺失 resume 用空数组触发引擎重新校验磁盘。 */
-    @Transactional
-    public void recoverSessions() {
+    /** 重启恢复 + 租约续期/接管（规格 §12.1/§12.2）。
+     * 本实例持有的会话续租（CAS 失败即被接管，必须停写）；他人持有的过期租约经
+     * acquireLease（epoch 单调 +1）接管后重新挂载；物理互斥由 Worker 侧文件锁仲裁（ADR-006）。 */
+    public synchronized void recoverSessions() {
+        attachedResources.clear();
         DownloadEngine engine = libtorrentEngine();
-        if (engine == null) {
+        if (engine == null || !engine.available()) {
             return;
         }
         LocalDateTime now = LocalDateTime.now();
         for (EngineSessionRecord session : sessions.findRecoverable()) {
-            TorrentResource resource = resources.findById(session.getResourceId()).orElse(null);
+            UUID resourceId = session.getResourceId();
+            String engineType = EngineKind.LIBTORRENT.name();
+            if (workerId.equals(session.getWorkerId()) && sessions.renewLease(resourceId, engineType,
+                    workerId, session.getOwnerEpoch(), leaseSeconds)) {
+                session = freshLease(session);
+            } else {
+                var acquired = sessions.acquireLease(resourceId, engineType, workerId, leaseSeconds);
+                if (acquired.isEmpty()) continue;
+                session = acquired.get();
+            }
+            TorrentResource resource = resources.findById(resourceId).orElse(null);
             if (resource == null || !resource.metadataReady() || resource.getMetadataPath() == null) {
                 continue;
             }
@@ -275,23 +301,23 @@ public class TaskService {
             if (torrentBytes == null) {
                 continue;
             }
-            byte[] resumeBytes = downloadStorage.readResume(session.getResourceId()).orElse(new byte[0]);
+            byte[] resumeBytes = downloadStorage.readResume(resourceId).orElse(new byte[0]);
             try {
                 EngineSession attached = engine.createOrAttach(
                         new ResourceDescriptor(resource.getId().toString(), resource.getBtih(), resource.getBtmh(),
                                 resource.getVersionType().name(), resource.getMetadataPath(), resource.getTrackers(),
-                                torrentBytes, downloadStorage.resourceRoot(resource.getId()).toString(), resumeBytes),
-                        new EngineOptions(false, "default"));
-                sessions.updateState(session.getId(), attached.state().name(), now);
+                                torrentBytes, downloadStorage.resourceRoot(resourceId).toString(), resumeBytes),
+                        options(session));
+                updateSessionState(session, attached.state().name(), now);
+                attachedResources.add(resourceId);
             } catch (RuntimeException e) {
-                log.warn("会话恢复失败 resource={}: {}", session.getResourceId(), e.getMessage());
+                log.warn("会话恢复失败 resource={}: {}", resourceId, e.getMessage());
             }
         }
     }
 
     /** 需求并集下发 + 按文件精确对账进度 + 完成判定 + 共享会话生命周期（规格 §4.3/§5.1/§5.3/§7）。
      * 以会话为驱动单元：即使某资源无活跃任务，也需在无需求时暂停会话并落盘 resume。 */
-    @Transactional
     public void pushDemandAndRefreshProgress() {
         DownloadEngine engine = libtorrentEngine();
         if (engine == null) {
@@ -305,6 +331,19 @@ public class TaskService {
 
         for (EngineSessionRecord session : sessions.findRecoverable()) {
             UUID resourceId = session.getResourceId();
+            // P5（§12.2）：仅驱动本实例持有的会话；他人会话由 recoverSessions 的接管路径负责
+            if (!workerId.equals(session.getWorkerId()) || !attachedResources.contains(resourceId)) {
+                continue;
+            }
+            // 需求下发前续租：CAS 失败即所有权丢失，必须停写（fail-closed）
+            if (!sessions.renewLease(resourceId, EngineKind.LIBTORRENT.name(), workerId,
+                    session.getOwnerEpoch(), leaseSeconds)) {
+                log.warn("需求下发前续租失败，本实例停写 resource={}", resourceId);
+                continue;
+            }
+            session = freshLease(session);
+            engine.renewLease(resourceId.toString(), session.getOwnerEpoch(),
+                    session.getLeaseUntil().toInstant(java.time.ZoneOffset.UTC));
             Set<Integer> demand = demandUnion(resourceId);
             String sessionId = session.getId().toString();
 
@@ -317,62 +356,68 @@ public class TaskService {
             }
             if ("IDLE".equals(session.getState())) {
                 engine.resumeSession(sessionId);
-                sessions.updateState(session.getId(), SessionState.ACTIVE.name(), now);
-                session = sessions.findByResource(resourceId, EngineKind.LIBTORRENT.name()).orElse(session);
+                updateSessionState(session, SessionState.ACTIVE.name(), now);
+                session = freshLease(session);
             }
             engine.setDemand(sessionId, demand);
             EngineSnapshot snap = engine.snapshot(sessionId);
-            sessions.updateState(session.getId(), snap.state().name(), now);
-
-            Map<Integer, Long> fileSizes = resources.findFiles(resourceId).stream()
-                    .collect(Collectors.toMap(TorrentFileInfo::getFileIndex, TorrentFileInfo::getSizeBytes));
-            List<Long> fileVerified = snap.fileVerifiedBytes();
-
-            for (DownloadTask t : activesByResource.getOrDefault(resourceId, List.of())) {
-                List<DownloadTaskFile> taskFiles = tasks.findFiles(t.getId());
-                long taskVerified = 0L;
-                boolean allSelectedComplete = true;
-                for (DownloadTaskFile tf : taskFiles) {
-                    if (!tf.isSelected()) {
-                        continue;
-                    }
-                    long fileSize = fileSizes.getOrDefault(tf.getFileIndex(), 0L);
-                    long verified = fileIndexSafe(fileVerified, tf.getFileIndex());
-                    verified = Math.min(verified, fileSize);
-                    tasks.updateFileProgress(t.getId(), tf.getFileIndex(), verified);
-                    taskVerified += verified;
-                    if (verified < fileSize) {
-                        allSelectedComplete = false;
-                    }
-                }
-                taskVerified = Math.min(taskVerified, t.getSelectedBytes());
-                DownloadTask reloaded = tasks.findById(t.getId()).orElse(t);
-                if (taskVerified != reloaded.getVerifiedBytes()) {
-                    update(reloaded.withProgress(taskVerified, now));
-                    reloaded = tasks.findById(t.getId()).orElse(reloaded);
-                }
-
-                switch (reloaded.getStatus()) {
-                    case DOWNLOADING -> {
-                        if (allSelectedComplete && t.getSelectedBytes() > 0) {
-                            transition(reloaded, TaskStatus.VERIFYING);
-                        }
-                    }
-                    case VERIFYING -> {
-                        if (allSelectedComplete && snap.metadataReady()) {
-                            DownloadTask completed = transition(reloaded, TaskStatus.COMPLETED)
-                                    .withCompletedAt(now, now);
-                            update(completed);
-                            events.append(t.getId(), "STATUS", "{\"status\":\"COMPLETED\"}");
-                        }
-                    }
-                    case REPAIRING -> {
-                        // 完整性失败后重新入队下载（规格 §5.1）
-                        transition(reloaded, TaskStatus.QUEUED);
-                    }
-                    default -> { /* no-op */ }
-                }
+            updateSessionState(session, snap.state().name(), now);
+            if (snap.state() == SessionState.RECOVERING) {
+                continue; // 重校验结束前不得用 resume 中的旧计数推进完成状态。
             }
+
+            EngineSessionRecord owned = session;
+            sessions.withLease(owned, () -> {
+                Map<Integer, Long> fileSizes = resources.findFiles(resourceId).stream()
+                        .collect(Collectors.toMap(TorrentFileInfo::getFileIndex, TorrentFileInfo::getSizeBytes));
+                List<Long> fileVerified = snap.fileVerifiedBytes();
+
+                for (DownloadTask t : activesByResource.getOrDefault(resourceId, List.of())) {
+                    List<DownloadTaskFile> taskFiles = tasks.findFiles(t.getId());
+                    long taskVerified = 0L;
+                    boolean allSelectedComplete = true;
+                    for (DownloadTaskFile tf : taskFiles) {
+                        if (!tf.isSelected()) {
+                            continue;
+                        }
+                        long fileSize = fileSizes.getOrDefault(tf.getFileIndex(), 0L);
+                        long verified = fileIndexSafe(fileVerified, tf.getFileIndex());
+                        verified = Math.min(verified, fileSize);
+                        tasks.updateFileProgress(t.getId(), tf.getFileIndex(), verified);
+                        taskVerified += verified;
+                        if (verified < fileSize) {
+                            allSelectedComplete = false;
+                        }
+                    }
+                    taskVerified = Math.min(taskVerified, t.getSelectedBytes());
+                    DownloadTask reloaded = tasks.findById(t.getId()).orElse(t);
+                    if (taskVerified != reloaded.getVerifiedBytes()) {
+                        update(reloaded.withProgress(taskVerified, now));
+                        reloaded = tasks.findById(t.getId()).orElse(reloaded);
+                    }
+
+                    switch (reloaded.getStatus()) {
+                        case DOWNLOADING -> {
+                            if (allSelectedComplete && t.getSelectedBytes() > 0) {
+                                transition(reloaded, TaskStatus.VERIFYING);
+                            }
+                        }
+                        case VERIFYING -> {
+                            if (allSelectedComplete && snap.metadataReady()) {
+                                DownloadTask completed = transition(reloaded, TaskStatus.COMPLETED)
+                                        .withCompletedAt(now, now);
+                                update(completed);
+                                events.append(t.getId(), "STATUS", "{\"status\":\"COMPLETED\"}");
+                            }
+                        }
+                        case REPAIRING -> {
+                            // 完整性失败后重新入队下载（规格 §5.1）
+                            transition(reloaded, TaskStatus.QUEUED);
+                        }
+                        default -> { /* no-op */ }
+                    }
+                }
+            });
         }
     }
 
@@ -381,17 +426,21 @@ public class TaskService {
                                        UUID resourceId, LocalDateTime now) {
         String sessionId = session.getId().toString();
         try {
-            ResumeSnapshot resume = engine.saveResume(sessionId);
-            if (resume != null && resume.data() != null && resume.data().length > 0) {
-                downloadStorage.writeResumeAtomically(resourceId, resume.data());
-                sessions.updateResume(session.getId(), resume.resumeVersion(),
-                        downloadStorage.resumeFile(resourceId).toString(), now);
-            }
+            sessions.withLease(session, () -> {
+                ResumeSnapshot resume = engine.saveResume(sessionId);
+                if (resume != null && resume.data() != null && resume.data().length > 0) {
+                    downloadStorage.writeResumeAtomically(resourceId, resume.data());
+                    if (!sessions.updateResume(session.getId(), resume.resumeVersion(),
+                            downloadStorage.resumeFile(resourceId).toString(), now, workerId, session.getOwnerEpoch())) {
+                        throw new IllegalStateException("Resume ownership lost");
+                    }
+                }
+                engine.pauseSession(sessionId);
+                updateSessionState(session, SessionState.IDLE.name(), now);
+            });
         } catch (RuntimeException e) {
-            log.warn("保存 resume 失败 resource={}: {}", resourceId, e.getMessage());
+            log.warn("保存 resume 或暂停失败 resource={}: {}", resourceId, e.getMessage());
         }
-        engine.pauseSession(sessionId);
-        sessions.updateState(session.getId(), SessionState.IDLE.name(), now);
     }
 
     private static long fileIndexSafe(List<Long> fileVerified, int index) {
@@ -434,12 +483,17 @@ public class TaskService {
         return task;
     }
 
+    /** 确保本实例持有资源会话租约并挂载引擎（规格 §12.2）：
+     * 占位行幂等插入 → MySQL NOW CAS 获取/接管租约（epoch 单调 +1）→ 携带 epoch 挂载。
+     * 他人持有有效租约时抛 WORKER_UNAVAILABLE（瞬态，任务保持 QUEUED 重试）。 */
     private void ensureEngineSession(UUID resourceId) {
-        if (sessions.findByResource(resourceId, EngineKind.LIBTORRENT.name()).isPresent()) {
+        String engineType = EngineKind.LIBTORRENT.name();
+        Optional<EngineSessionRecord> existing = sessions.findByResource(resourceId, engineType);
+        if (attachedResources.contains(resourceId)) {
             return;
         }
         DownloadEngine engine = libtorrentEngine();
-        if (engine == null) {
+        if (engine == null || !engine.available()) {
             throw new DomainException(ErrorCodes.WORKER_UNAVAILABLE, "下载引擎未接入");
         }
         TorrentResource resource = resources.findById(resourceId)
@@ -452,18 +506,47 @@ public class TaskService {
         byte[] torrentBytes = torrentStorage.loadTorrent(resource.getMetadataPath())
                 .orElseThrow(() -> new DomainException(ErrorCodes.INPUT_LOST,
                         "资源的 torrent 元数据已丢失，请重新解析或上传"));
-        byte[] resumeBytes = downloadStorage.readResume(resourceId).orElse(null);
+        byte[] resumeBytes = downloadStorage.readResume(resourceId).orElse(new byte[0]);
+        sessions.insertIfAbsent(new EngineSessionRecord(resourceId, resourceId, workerId, engineType,
+                SessionState.DISCOVERING.name(), 0L, null, 0L, LocalDateTime.now(), LocalDateTime.now()));
+        EngineSessionRecord leased;
+        if (existing.isPresent() && workerId.equals(existing.get().getWorkerId())
+                && sessions.renewLease(resourceId, engineType, workerId, existing.get().getOwnerEpoch(), leaseSeconds)) {
+            leased = freshLease(existing.get());
+        } else {
+            leased = sessions.acquireLease(resourceId, engineType, workerId, leaseSeconds)
+                    .orElseThrow(() -> new DomainException(ErrorCodes.WORKER_UNAVAILABLE,
+                            "资源会话由其他 Worker 持有且租约有效"));
+        }
         try {
             EngineSession session = engine.createOrAttach(
                     new ResourceDescriptor(resourceId.toString(), resource.getBtih(), resource.getBtmh(),
                             resource.getVersionType().name(), resource.getMetadataPath(), resource.getTrackers(),
                             torrentBytes, downloadStorage.resourceRoot(resource.getId()).toString(), resumeBytes),
-                    new EngineOptions(false, "default"));
-            sessions.insert(new EngineSessionRecord(resourceId, resourceId, "local-worker-1",
-                    EngineKind.LIBTORRENT.name(), session.state().name(), 1L, null, 0L,
-                    LocalDateTime.now(), LocalDateTime.now()));
+                    options(leased));
+            updateSessionState(leased, session.state().name(), LocalDateTime.now());
+            attachedResources.add(resourceId);
         } catch (RuntimeException e) {
             throw new DomainException(ErrorCodes.WORKER_UNAVAILABLE, "引擎会话创建失败: " + e.getMessage());
+        }
+    }
+
+    private EngineSessionRecord freshLease(EngineSessionRecord expected) {
+        EngineSessionRecord current = sessions.findByResource(expected.getResourceId(), expected.getEngineType()).orElseThrow();
+        if (!workerId.equals(current.getWorkerId()) || current.getOwnerEpoch() != expected.getOwnerEpoch()) {
+            throw new DomainException(ErrorCodes.WORKER_UNAVAILABLE, "资源租约已被接管");
+        }
+        return current;
+    }
+
+    private EngineOptions options(EngineSessionRecord session) {
+        return new EngineOptions(false, "default", session.getOwnerEpoch(),
+                session.getLeaseUntil().toInstant(java.time.ZoneOffset.UTC));
+    }
+
+    private void updateSessionState(EngineSessionRecord session, String state, LocalDateTime now) {
+        if (!sessions.updateState(session.getId(), state, now, workerId, session.getOwnerEpoch())) {
+            throw new DomainException(ErrorCodes.WORKER_UNAVAILABLE, "资源会话租约已失效");
         }
     }
 

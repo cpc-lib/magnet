@@ -34,6 +34,7 @@ message CommandEnvelope {
   string resource_id = 2;  // 业务资源标识（非 torrent_handle）
   int64 owner_epoch = 3;   // 仅当前 epoch 的写入有效
   google.protobuf.Timestamp deadline = 4;
+  google.protobuf.Timestamp lease_until = 5; // DB UTC 租约截止时间；命令不能延长此授权
 }
 
 message ResolveMetadataRequest {

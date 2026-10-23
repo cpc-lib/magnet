@@ -402,6 +402,14 @@ class ParseServiceTest {
 
     // ---------- 工具 ----------
 
+    @Test
+    void metadataPollingReattachesUnresolvedSessionAfterWorkerLoss() {
+        service.submitMagnet(alice, MAGNET);
+        int before = engine.createCalls;
+        assertEquals(0, service.completeResolvedMetadata());
+        assertEquals(before + 1, engine.createCalls);
+    }
+
     /** 最小合法 V1 单文件 torrent：5 字节内容、1 个 piece（结构校验不核对内容哈希） */
     private static byte[] tinyTorrent() {
         try {

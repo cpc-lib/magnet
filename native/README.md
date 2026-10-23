@@ -36,13 +36,28 @@ docker compose -f infra/docker-compose.yml up -d
 
 ```powershell
 docker run -d --name magnet-worker `
-  -p 50051:50051 `
+  -p 127.0.0.1:50051:50051 `
   -p 6881:6881 -p 6881:6881/udp `
   -v worker-data:/data `
+  -v worker-locks:/locks `
   magnet-libtorrent-worker:test
 ```
 
 `/data` 必须挂载为持久化 Worker 下载根；容器内 `--download-root=/data` 由镜像默认命令传入。Java 的 `AddTorrentRequest.storage_path` 必须是 `/data` 下的绝对路径，或相对于该根的路径；空路径、根外绝对路径、软链接逃逸路径和规范化后逃逸的 `..` 路径都会被拒绝。若使用 bind mount，宿主目录必须映射到 `/data`，例如 `-v d:\magnet-data:/data`。
+
+P5 进一步要求资源路径与 `resources/{resource_id}` 一致，防止不同资源锁指向同一物理目录。
+所有共享数据的 Worker 必须共用 Linux Docker 命名卷 `/locks`（默认 `LOCK_ROOT=/locks`），
+不能用每个容器独立的匿名锁卷。每个请求均需 `owner_epoch`、`deadline` 和 `lease_until`；
+租约截止时间由 API 从 MySQL UTC 租约传入，Worker 不自行延长授权。
+旧协议客户端不能与新版 Worker 混用，部署步骤参见根 README 的 P5 章节。
+
+锁在进程退出或 libtorrent 明确确认资源移除已排空后才释放。租约到期会终止整个 Worker，
+防止后台磁盘线程在失去所有权后继续写入。Epoch 下限持久保存在锁卷中，不随容器重启丢失。
+元数据会话不允许下载负载或删除数据，解析成功且移除确认后释放锁。
+
+真实双容器回归：`docker build -t magnet-libtorrent-worker:ha-test native` 后运行
+`python native/tests/test_ha.py`（需安装 `grpcio grpcio-tools`）。覆盖独占锁、过期命令、
+容器崩溃接管、旧 Epoch 重放、进程冻结、租约超时、损坏文件重校验和删除确认。
 
 端口说明：
 
