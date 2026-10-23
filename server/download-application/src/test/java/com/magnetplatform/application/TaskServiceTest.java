@@ -541,6 +541,36 @@ class TaskServiceTest {
     }
 
     @Test
+    void pauseResumePreservesOriginalStartedAt() {
+        service = serviceWithEngine(new RecordingEngine());
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        assertNull(task.getStartedAt());
+        LocalDateTime beforeStart = LocalDateTime.now();
+        service.dispatchTick(1);
+        DownloadTask downloading = tasks.findById(task.getId()).orElseThrow();
+        assertEquals(TaskStatus.DOWNLOADING, downloading.getStatus());
+        assertNotNull(downloading.getStartedAt());
+        assertFalse(downloading.getStartedAt().isBefore(beforeStart));
+
+        // 模拟已下载一段时间的持久化任务，避免依赖系统时钟精度或 sleep。
+        LocalDateTime originalStart = LocalDateTime.of(2026, 1, 1, 12, 0);
+        tasks.updateCas(downloading.withStartedAt(originalStart, LocalDateTime.now()));
+        for (int cycle = 0; cycle < 2; cycle++) {
+            service.pause(alice, false, task.getId());
+            service.dispatchTick(1);
+            DownloadTask paused = tasks.findById(task.getId()).orElseThrow();
+            assertEquals(TaskStatus.PAUSED, paused.getStatus());
+            assertEquals(originalStart, paused.getStartedAt());
+            DownloadTask queued = service.resume(alice, false, task.getId());
+            assertEquals(originalStart, queued.getStartedAt());
+            service.dispatchTick(1);
+            DownloadTask resumed = tasks.findById(task.getId()).orElseThrow();
+            assertEquals(TaskStatus.DOWNLOADING, resumed.getStatus());
+            assertEquals(originalStart, resumed.getStartedAt());
+        }
+    }
+
+    @Test
     void pauseResumeCycle() {
         DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
         DownloadTask pausing = service.pause(alice, false, task.getId());

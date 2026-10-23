@@ -250,7 +250,7 @@ public class TaskService {
             try {
                 ensureEngineSession(t.getResourceId());
                 DownloadTask started = transition(t, TaskStatus.STARTING)
-                        .withStartedAt(now, now);
+                        .withStartedAt(t.getStartedAt() == null ? now : t.getStartedAt(), now);
                 update(started);
                 DownloadTask current = tasks.findById(t.getId()).orElseThrow();
                 transition(current, TaskStatus.DOWNLOADING);
