@@ -4,6 +4,7 @@
 > 跨主机 fencing、宿主机/数据库/存储 HA、HTTP 入口负载均衡不在本次范围。
 > 实现提交：`99c1586`。
 > SSE 中文断连补修：`7802b02`。
+> 暂停/恢复保留开始时间：`2dcad2b`。
 
 ## 当前状态与入口
 
@@ -28,18 +29,23 @@
 
 ## 本轮验证记录
 
-后端 `mvn test`：9 个 Maven 模块全部 SUCCESS，120 项测试，0 失败、0 错误、0 跳过。
+后端 `mvn test`：9 个 Maven 模块全部 SUCCESS，121 项测试，0 失败、0 错误、0 跳过。
 真实 MySQL Testcontainers API 集成测试已运行，未以缺少 Docker 为由跳过。
 
 | 模块 | 用例 |
 |---|---:|
 | download-domain | 38 |
-| download-application | 57（Auth 5 / Parse 15 / Task 27 / Export 6 / GC 4） |
+| download-application | 58（Auth 5 / Parse 15 / Task 28 / Export 6 / GC 4） |
 | download-infrastructure | 8 |
 | download-api | 17（API 集成 4 / SSE 异常处理 9 / TCP 断连 1 / gRPC 租约协议 3） |
 
 前端：`cd web; npm run build`，TypeScript 检查和 Vite 生产构建成功。
 现有大 bundle 提示不影响构建；本轮未做 P7 性能重构。
+
+2026-10-23 开始时间补修：`TaskServiceTest.pauseResumePreservesOriginalStartedAt`
+修复前复现恢复时覆盖时间，修复后验证首次启动写入时间及连续两轮暂停/恢复保留时间。
+`mvn -pl server/download-application -am "-Dtest=TaskServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`
+28 项全部通过；随后全量 `mvn test` 和 `cd web; npm run build` 均成功。
 
 2026-10-23 SSE 补充回归：先添加 6 个失败用例复现中文原生 IOException 漏判、
 已提交响应被追加错误体和预设 SSE 类型导致业务错误无法写入 JSON，再修复至全部通过。
@@ -81,6 +87,7 @@ python native/tests/test_ha.py
 8. 恢复时清除 Resume 的 have/verified/unfinished 位图和 seed_mode，重新校验实际磁盘。
    RECOVERING 快照不能推进完成；真实重校验发现坏块时允许文件进度下降。
 9. 活跃用户选中文件取并集；并集为空才保存 Resume 并暂停。完成仍需两轮精确快照。
+   任务 startedAt 只在首次进入 STARTING 时赋值，暂停/恢复重新排队必须保留已有开始时间。
 10. 导出仍为手动 `POST /api/v1/tasks/{id}/exports`；GET 列表与任务完成不会自动导出。
     SSE IOException 按响应类型处理，断连不向 text/event-stream 再写普通 JSON 错误体；
     已提交响应不追加错误体，未提交的业务错误显式返回 application/json 和对应状态码。
@@ -109,6 +116,9 @@ python native/tests/test_ha.py
   SSE 错误处理同时检查响应 Content-Type，不能只匹配异常消息。回归见
   `GlobalExceptionHandlerTest.localizedIoOnEventStreamDoesNotWriteJson` 和
   `localizedIoAfterStreamCommitPreservesWrittenEvents`。
+- 恢复下载会重新经过 QUEUED → STARTING，不能在这条公共调度路径无条件覆盖 startedAt；
+  使用已有值，只有为空才写当前时间。回归 `TaskServiceTest.pauseResumePreservesOriginalStartedAt`
+  同时验证首次记录时间和连续两轮暂停/恢复保留时间。
 
 ## 后续工作
 

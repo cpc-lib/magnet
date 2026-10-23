@@ -18,6 +18,15 @@
 - **修复**: `7802b02`：SSE IO 按响应类型处理；已提交响应不追加错误体；未提交的业务错误显式指定 JSON；send IOException 后不再竞争调用 complete。
 - **验证**: `mvn test` 共 120 项全部通过，无跳过；`cd web; npm run build` 成功。真实 Tomcat TCP RST 测试在全量及额外两次定向执行均通过，确认发送线程退出且没有转换/ExceptionHandler 二次错误。下列容器回调行为仍单独跟踪。
 
+## ✅ 已修复 | 暂停后恢复下载覆盖开始时间
+- **发现日期**: 2026-10-23
+- **严重级**: 中
+- **现象**: 用户恢复下载后，任务开始时间变成此次恢复的时间。
+- **复现**: `TaskServiceTest.pauseResumePreservesOriginalStartedAt`；修复前断言原开始时间失败，实际值被替换成调度时刻。
+- **根因**: 恢复下载重新入队，公共 QUEUED → STARTING 调度路径无条件调用 withStartedAt(now, now)。
+- **修复**: `2dcad2b`：开始时间为空时才写入当前时间，否则保留已有值。不回写历史上已被覆盖且无法确定的首次时间。
+- **验证**: 复现测试先失败后通过；`TaskServiceTest` 28 项全部通过（含首次启动及连续两轮暂停/恢复）；全量 `mvn test` 121 项通过，0 失败/错误/跳过；`cd web; npm run build` 成功。
+
 ## 🟡 调查中 | Tomcat TCP reset 后完成回调偶发缺失
 - **发现日期**: 2026-10-23
 - **严重级**: 低
