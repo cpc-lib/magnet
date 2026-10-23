@@ -4,6 +4,7 @@
 > 跨主机 fencing、宿主机/数据库/存储 HA、HTTP 入口负载均衡不在本次范围。
 > 历史提交：`99c1586`（P5 HA）、`7802b02`（SSE 补修）、`2dcad2b`（时间补修）。
 > P6 HTTP/HTTPS 实机补齐：`e0f754e`。
+> 2026-10-23 已将 `codex/p6-http-acceptance` 快进合并至本地 main（`6fd20fc`），无冲突、未推送。
 
 ## 当前状态与入口
 
@@ -57,6 +58,8 @@ P6 实机证据：`Aria2DownloadIntegrationTest` 三项真实用例全部通过�
 最终全量 `mvn test` 同样包含上述三项（58.39 秒），所有模块成功。
 `docker compose -f infra/docker-compose.yml config --profiles` 在没有 HTTP 密钥时仍成功列出 ha/http。
 本轮审查发现的失败会话租约、可选 profile 插值和暂停后重启自动下载问题均已处理并验证。
+合并 main 后复测：`mvn test` BUILD SUCCESS，但当时 Docker 不可用，API/Docker 集成共 7 项被跳过；
+其余测试无失败/错误，`cd web; npm run build` 成功。上面的 170 项无跳过实机记录是合并前同一代码版本的验证结果。
 
 2026-10-23 开始时间补修：`TaskServiceTest.pauseResumePreservesOriginalStartedAt`
 修复前复现恢复时覆盖时间，修复后验证首次启动写入时间及连续两轮暂停/恢复保留时间。

@@ -43,6 +43,7 @@
 - **根因**: 仅 Mock 验证遗漏 aria2 HTTP 400 JSON-RPC 错误；未区分 daemon 路径，未指定 out，默认自动改名；未确认停止即记录成功；控制面 FAILED 状态与有效租约 SQL 互斥。
 - **修复**: `e0f754e`：补齐路径/文件名、实际断点、显式 Mock、RPC 错误传播、可续租失败处理/显式重试和确认停止后的宿主机 GC；新 GID 初始暂停，只有活跃需求才恢复。
 - **验证**: 新增回归先失败后通过；`mvn test` 共 170 项通过，0 失败/错误/跳过，包含真实 HTTP/HTTPS 的暂停、暂停/下载中重启 daemon、非零 Range 续传、源文件/手动导出 16 MiB 字节一致及真实 503 后显式重试。`cd web; npm run build` 成功；无 HTTP 密钥时 `docker compose -f infra/docker-compose.yml config --profiles` 成功。只操作隔离测试容器和临时存储。
+- **合并复测**: 2026-10-23 已快进合并至本地 main（`6fd20fc`）；`mvn test` 与前端构建成功，本次 Docker 不可用导致 7 项集成测试跳过，未宣称此次重复执行了实机用例。
 
 ## 范围边界
 
