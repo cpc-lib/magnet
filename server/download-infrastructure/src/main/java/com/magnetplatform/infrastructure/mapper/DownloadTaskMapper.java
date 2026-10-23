@@ -32,4 +32,11 @@ public interface DownloadTaskMapper {
 
     /** CAS：WHERE id AND version=expectedVersion，返回影响行数 */
     int updateCas(@Param("task") DownloadTask task, @Param("expectedVersion") long expectedVersion);
+
+    /** 单文件已校验字节 CAS 更新：仅当新值不小于旧值时写入 */
+    void updateFileProgress(@Param("taskId") UUID taskId,
+                            @Param("fileIndex") int fileIndex,
+                            @Param("verifiedBytes") long verifiedBytes);
+
+    long countNonDeletedByResource(@Param("resourceId") UUID resourceId);
 }

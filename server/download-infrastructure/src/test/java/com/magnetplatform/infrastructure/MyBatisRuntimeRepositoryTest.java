@@ -94,6 +94,11 @@ class MyBatisRuntimeRepositoryTest {
             deletedUserId = userId;
             deletedTaskId = taskId;
         }
+
+        @Override
+        public long countActiveByResource(UUID resourceId) {
+            return 0L;
+        }
     }
 
     private static final class RecordingResourceGcMapper implements ResourceGcMapper {

@@ -84,6 +84,10 @@ public class ExportService {
             LocalDateTime now = LocalDateTime.now();
             UUID exportId = existing != null ? existing.getId() : UUID.randomUUID();
             try {
+                if (info.getSizeBytes() > 0 && tf.getVerifiedBytes() < info.getSizeBytes()) {
+                    throw new DomainException(ErrorCodes.EXPORT_IO_ERROR,
+                            "选中文件尚未完成分块校验: " + info.getRelativePath());
+                }
                 Path source = validateSourceFile(reloaded.getResourceId(), resourceRoot, info.getRelativePath());
                 Path target = resolveTargetFile(exportRoot, reloaded.getTargetSubdirectory(), info.getRelativePath());
                 if (existing == null) {

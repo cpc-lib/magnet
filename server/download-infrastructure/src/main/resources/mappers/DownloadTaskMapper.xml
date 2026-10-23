@@ -105,4 +105,16 @@
             deleted_at = #{task.deletedAt}
         WHERE id = #{task.id} AND version = #{expectedVersion}
     </update>
+
+    <update id="updateFileProgress">
+        UPDATE download_task_file
+        SET verified_bytes = #{verifiedBytes}
+        WHERE task_id = #{taskId} AND file_index = #{fileIndex}
+          AND verified_bytes &lt;= #{verifiedBytes}
+    </update>
+
+    <select id="countNonDeletedByResource" resultType="long">
+        SELECT COUNT(*) FROM download_task
+        WHERE resource_id = #{resourceId} AND deleted_at IS NULL
+    </select>
 </mapper>

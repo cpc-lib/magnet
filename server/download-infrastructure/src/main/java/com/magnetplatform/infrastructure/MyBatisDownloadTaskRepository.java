@@ -61,4 +61,14 @@ public class MyBatisDownloadTaskRepository implements DownloadTaskRepository {
         // task.version 已被 with* 方法 +1，CAS 匹配旧版本号
         return mapper.updateCas(task, task.getVersion() - 1) == 1;
     }
+
+    @Override
+    public void updateFileProgress(UUID taskId, int fileIndex, long verifiedBytes) {
+        mapper.updateFileProgress(taskId, fileIndex, verifiedBytes);
+    }
+
+    @Override
+    public long countNonDeletedByResource(UUID resourceId) {
+        return mapper.countNonDeletedByResource(resourceId);
+    }
 }

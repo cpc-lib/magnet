@@ -17,7 +17,7 @@ import {
 import { ArrowLeftOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import client from '@/api/client';
-import type { CreateTaskRequest, FileView, ParseJobView, ParseStatus, ResourceDetailView } from '@/api/types';
+import type { CreateTaskRequest, FileView, ParseJobView, ParseStatus, ResourceDetailView, TaskView } from '@/api/types';
 import { PATHS } from '@/router/paths';
 import { formatBytes, formatTime } from '@/utils/format';
 
@@ -152,9 +152,9 @@ export default function ParseDetailPage() {
             startImmediately,
             ...(subdirectory ? { targetSubdirectory: subdirectory } : {}),
           };
-          await client.post('/tasks', body);
+          const { data: created } = await client.post<TaskView>('/tasks', body);
           message.success('下载任务已创建');
-          navigate(PATHS.TASKS);
+          navigate(created?.id ? PATHS.taskDetail(created.id) : PATHS.TASKS);
         } catch (err: any) {
           message.error(err.response?.data?.message ?? '创建失败');
         } finally {

@@ -190,7 +190,8 @@ public class GrpcLibtorrentEngine implements DownloadEngine {
             return new EngineSnapshot(engineSessionId, state, resp.getMetadataReady(),
                     resp.getVerifiedBytes(),
                     resp.getDownloadRateBytesPerSec(), resp.getUploadRateBytesPerSec(),
-                    resp.getPeerCount());
+                    resp.getPeerCount(),
+                    List.copyOf(resp.getFileVerifiedBytesList()));
         } catch (StatusRuntimeException e) {
             log.warn("[grpc-libtorrent] getSnapshot 失败 sessionId={} status={}",
                     engineSessionId, e.getStatus().getCode());

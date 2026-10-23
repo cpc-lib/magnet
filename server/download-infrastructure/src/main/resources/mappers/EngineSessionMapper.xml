@@ -36,4 +36,17 @@
     <update id="updateState">
         UPDATE engine_session SET state = #{state}, updated_at = #{updatedAt} WHERE id = #{id}
     </update>
+
+    <update id="updateResume">
+        UPDATE engine_session SET resume_version = #{resumeVersion},
+                                  resume_path = #{resumePath},
+                                  updated_at = #{updatedAt}
+        WHERE id = #{id}
+    </update>
+
+    <select id="findRecoverable" resultMap="session">
+        SELECT <include refid="columns"/> FROM engine_session
+        WHERE state NOT IN ('STOPPED', 'FAILED')
+        ORDER BY updated_at ASC
+    </select>
 </mapper>

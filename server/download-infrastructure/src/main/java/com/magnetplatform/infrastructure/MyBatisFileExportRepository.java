@@ -44,4 +44,9 @@ public class MyBatisFileExportRepository implements FileExportRepository {
     public void deleteOwnedByTask(UUID userId, UUID taskId) {
         mapper.deleteOwnedByTask(userId, taskId);
     }
+
+    @Override
+    public long countActiveByResource(UUID resourceId) {
+        return mapper.countActiveByResource(resourceId);
+    }
 }

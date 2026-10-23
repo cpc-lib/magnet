@@ -42,6 +42,9 @@ magnet:
     sweep-delay-ms: ${PARSE_SWEEP_DELAY_MS:5000}
   storage:
     root: ${STORAGE_ROOT:./data}
+  gc:
+    grace-seconds: ${GC_GRACE_SECONDS:300}
+    sweep-delay-ms: ${GC_SWEEP_DELAY_MS:60000}
   engine:
     libtorrent:
       grpc:

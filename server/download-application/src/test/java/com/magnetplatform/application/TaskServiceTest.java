@@ -47,6 +47,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -109,6 +110,27 @@ class TaskServiceTest {
             byId.put(task.getId(), task);
             return true;
         }
+
+        public void updateFileProgress(UUID taskId, int fileIndex, long verifiedBytes) {
+            List<DownloadTaskFile> list = files.get(taskId);
+            if (list == null) {
+                return;
+            }
+            for (int i = 0; i < list.size(); i++) {
+                DownloadTaskFile f = list.get(i);
+                if (f.getFileIndex() == fileIndex && f.getVerifiedBytes() <= verifiedBytes) {
+                    list.set(i, new DownloadTaskFile(f.getId(), f.getTaskId(), f.getFileIndex(),
+                            f.isSelected(), verifiedBytes, f.getExportState()));
+                    return;
+                }
+            }
+        }
+
+        public long countNonDeletedByResource(UUID resourceId) {
+            return byId.values().stream()
+                    .filter(t -> t.getResourceId().equals(resourceId) && t.getDeletedAt() == null)
+                    .count();
+        }
     }
 
     static class InMemoryEvents implements TaskEventRepository {
@@ -140,6 +162,8 @@ class TaskServiceTest {
     }
 
     static class FakeDownloadStorage implements DownloadStorage {
+        boolean writeResumeCalled;
+
         public Path resourceRoot(UUID resourceId) {
             return Path.of("storage", "resources", resourceId.toString());
         }
@@ -157,6 +181,7 @@ class TaskServiceTest {
         }
 
         public void writeResumeAtomically(UUID resourceId, byte[] bytes) {
+            writeResumeCalled = true;
         }
 
         public Optional<byte[]> readResume(UUID resourceId) {
@@ -173,6 +198,11 @@ class TaskServiceTest {
     static class RecordingEngine implements DownloadEngine {
         ResourceDescriptor resource;
         int createCalls;
+        Set<Integer> lastDemand;
+        boolean paused;
+        boolean resumed;
+        EngineSnapshot snapshot = EngineSnapshot.empty("s");
+        ResumeSnapshot resume = new ResumeSnapshot("s", 1L, new byte[]{1, 2, 3});
 
         public EngineKind kind() {
             return EngineKind.LIBTORRENT;
@@ -189,20 +219,23 @@ class TaskServiceTest {
         }
 
         public void setDemand(String engineSessionId, Set<Integer> requestedFileIndices) {
+            lastDemand = requestedFileIndices;
         }
 
         public void pauseSession(String engineSessionId) {
+            paused = true;
         }
 
         public void resumeSession(String engineSessionId) {
+            resumed = true;
         }
 
         public EngineSnapshot snapshot(String engineSessionId) {
-            return EngineSnapshot.empty(engineSessionId);
+            return snapshot;
         }
 
         public ResumeSnapshot saveResume(String engineSessionId) {
-            return null;
+            return resume;
         }
 
         public void removeSession(String engineSessionId, boolean removeUnreferencedData) {
@@ -221,6 +254,33 @@ class TaskServiceTest {
         }
 
         public void updateState(UUID id, String state, LocalDateTime updatedAt) {
+            for (Map.Entry<String, EngineSessionRecord> e : byKey.entrySet()) {
+                if (e.getValue().getId().equals(id)) {
+                    EngineSessionRecord r = e.getValue();
+                    e.setValue(new EngineSessionRecord(r.getId(), r.getResourceId(), r.getWorkerId(),
+                            r.getEngineType(), state, r.getOwnerEpoch(), r.getLeaseUntil(),
+                            r.getResumeVersion(), r.getCreatedAt(), updatedAt, r.getResumePath()));
+                    return;
+                }
+            }
+        }
+
+        public void updateResume(UUID id, long resumeVersion, String resumePath, LocalDateTime updatedAt) {
+            for (Map.Entry<String, EngineSessionRecord> e : byKey.entrySet()) {
+                if (e.getValue().getId().equals(id)) {
+                    EngineSessionRecord r = e.getValue();
+                    e.setValue(new EngineSessionRecord(r.getId(), r.getResourceId(), r.getWorkerId(),
+                            r.getEngineType(), r.getState(), r.getOwnerEpoch(), r.getLeaseUntil(),
+                            resumeVersion, r.getCreatedAt(), updatedAt, resumePath));
+                    return;
+                }
+            }
+        }
+
+        public List<EngineSessionRecord> findRecoverable() {
+            return byKey.values().stream()
+                    .filter(r -> !"STOPPED".equals(r.getState()) && !"FAILED".equals(r.getState()))
+                    .toList();
         }
     }
 
@@ -410,7 +470,7 @@ class TaskServiceTest {
     void createRejectsInvalidIndexAndPathTraversal() {
         assertCode(ErrorCodes.VALIDATION, () -> service.create(alice, parseId, List.of(99), null, true, null));
         assertCode(ErrorCodes.VALIDATION, () -> service.create(alice, parseId, List.of(), null, true, null));
-        assertCode(ErrorCodes.VALIDATION,
+        assertCode(ErrorCodes.INVALID_PATH,
                 () -> service.create(alice, parseId, List.of(0), "../escape", true, null));
     }
 
@@ -499,6 +559,121 @@ class TaskServiceTest {
         // CREATED 不可直接 DOWNLOADING
         assertTrue(!task.getStatus().canTransitionTo(TaskStatus.DOWNLOADING));
         assertTrue(task.getStatus().canTransitionTo(TaskStatus.QUEUED));
+    }
+
+    // ---------- P3 共享会话与精确进度 ----------
+
+    private TaskService serviceWithEngine(RecordingEngine engine) {
+        resources.update(new TorrentResource(resourceId, "btih:abc", new byte[20], null,
+                VersionType.V1, "demo", 16384L, 150L, false, "TORRENT", List.of(), 2,
+                LocalDateTime.now(), torrentStorage.path));
+        return new TaskService(tasks, events, sessions, parseJobs, resources,
+                torrentStorage, downloadStorage, List.of(engine));
+    }
+
+    @Test
+    void progressUsesPerFileVerifiedBytesNotProportional() {
+        RecordingEngine engine = new RecordingEngine();
+        // 文件0=100字节已校验100，文件1=50字节已校验30
+        engine.snapshot = new EngineSnapshot("s", SessionState.ACTIVE, true,
+                130L, 0L, 0L, 0, List.of(100L, 30L));
+        service = serviceWithEngine(engine);
+
+        DownloadTask task = service.create(alice, parseId, List.of(1), null, true, null);
+        service.dispatchTick(1);
+
+        DownloadTask refreshed = tasks.findById(task.getId()).orElseThrow();
+        // 只选文件1，已校验30字节，不应按资源总量130*50/150=43 计算
+        assertEquals(30L, refreshed.getVerifiedBytes());
+        assertEquals(TaskStatus.DOWNLOADING, refreshed.getStatus());
+    }
+
+    @Test
+    void sharedSessionDemandUnionAcrossUsers() {
+        RecordingEngine engine = new RecordingEngine();
+        engine.snapshot = new EngineSnapshot("s", SessionState.ACTIVE, true,
+                0L, 0L, 0L, 0, List.of(0L, 0L));
+        service = serviceWithEngine(engine);
+
+        // Bob 也需要自己的解析记录（同一资源）
+        UUID bobParseId = UUID.randomUUID();
+        parseJobs.insert(new ParseJob(bobParseId, bob, resourceId, InputType.TORRENT, null,
+                "demo.torrent", "/x", "demo", ParseStatus.READY, null, null, 0L,
+                LocalDateTime.now(), LocalDateTime.now()));
+
+        DownloadTask aliceTask = service.create(alice, parseId, List.of(0), null, true, null);
+        DownloadTask bobTask = service.create(bob, bobParseId, List.of(1), null, true, null);
+        service.dispatchTick(1);
+
+        assertEquals(TaskStatus.DOWNLOADING, tasks.findById(aliceTask.getId()).orElseThrow().getStatus());
+        assertEquals(TaskStatus.DOWNLOADING, tasks.findById(bobTask.getId()).orElseThrow().getStatus());
+        // 需求并集 = {0, 1}
+        assertEquals(Set.of(0, 1), engine.lastDemand);
+    }
+
+    @Test
+    void pauseOneUserKeepsSessionRunningForOther() {
+        RecordingEngine engine = new RecordingEngine();
+        engine.snapshot = new EngineSnapshot("s", SessionState.ACTIVE, true,
+                0L, 0L, 0L, 0, List.of(0L, 0L));
+        service = serviceWithEngine(engine);
+
+        UUID bobParseId = UUID.randomUUID();
+        parseJobs.insert(new ParseJob(bobParseId, bob, resourceId, InputType.TORRENT, null,
+                "demo.torrent", "/x", "demo", ParseStatus.READY, null, null, 0L,
+                LocalDateTime.now(), LocalDateTime.now()));
+
+        DownloadTask aliceTask = service.create(alice, parseId, List.of(0), null, true, null);
+        DownloadTask bobTask = service.create(bob, bobParseId, List.of(1), null, true, null);
+        service.dispatchTick(1);
+        engine.paused = false;
+
+        service.pause(alice, false, aliceTask.getId());
+        service.dispatchTick(1);
+
+        // Alice 的暂停只收回她的需求，Bob 仍下载；会话不暂停
+        assertEquals(Set.of(1), engine.lastDemand);
+        assertFalse(engine.paused, "共享会话不应因单个用户暂停而停止");
+        assertEquals(TaskStatus.DOWNLOADING, tasks.findById(bobTask.getId()).orElseThrow().getStatus());
+    }
+
+    @Test
+    void allUsersPausedSavesResumeAndPausesSession() {
+        RecordingEngine engine = new RecordingEngine();
+        engine.snapshot = new EngineSnapshot("s", SessionState.ACTIVE, true,
+                0L, 0L, 0L, 0, List.of(0L, 0L));
+        service = serviceWithEngine(engine);
+
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+        engine.paused = false;
+        downloadStorage.writeResumeCalled = false;
+
+        service.pause(alice, false, task.getId());
+        service.dispatchTick(1);
+
+        // 无任何活跃需求 → 保存 resume + 暂停会话
+        assertTrue(downloadStorage.writeResumeCalled, "无需求时应保存 resume");
+        assertTrue(engine.paused, "无需求时应暂停共享会话");
+        EngineSessionRecord session = sessions.findByResource(resourceId, EngineKind.LIBTORRENT.name())
+                .orElseThrow();
+        assertEquals(SessionState.IDLE.name(), session.getState());
+    }
+
+    @Test
+    void completionRequiresAllSelectedFilesVerified() {
+        RecordingEngine engine = new RecordingEngine();
+        engine.snapshot = new EngineSnapshot("s", SessionState.ACTIVE, true,
+                100L, 0L, 0L, 0, List.of(100L, 50L));
+        service = serviceWithEngine(engine);
+
+        DownloadTask task = service.create(alice, parseId, List.of(0, 1), null, true, null);
+        service.dispatchTick(1); // DOWNLOADING → 进度全量 → VERIFYING
+        assertEquals(TaskStatus.VERIFYING, tasks.findById(task.getId()).orElseThrow().getStatus());
+
+        service.dispatchTick(1); // 第二次快照确认 → COMPLETED
+        assertEquals(TaskStatus.COMPLETED, tasks.findById(task.getId()).orElseThrow().getStatus());
+        assertEquals(150L, tasks.findById(task.getId()).orElseThrow().getVerifiedBytes());
     }
 
     private static void assertCode(String code, Executable executable) {

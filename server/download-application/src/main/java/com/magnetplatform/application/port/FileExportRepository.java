@@ -19,4 +19,7 @@ public interface FileExportRepository {
                      String errorMessage, LocalDateTime updatedAt);
 
     void deleteOwnedByTask(UUID userId, UUID taskId);
+
+    /** 资源下非 DELETED 导出数（GC 判定：为 0 才允许回收共享数据，规格 §10.2） */
+    long countActiveByResource(UUID resourceId);
 }

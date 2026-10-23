@@ -29,4 +29,10 @@ public interface DownloadTaskRepository {
 
     /** CAS 更新：WHERE id=? AND version=?，返回 false 表示版本冲突（规格 §8.1） */
     boolean updateCas(DownloadTask task);
+
+    /** 单文件已校验字节 CAS 更新：仅当新值不小于旧值时写入（规格 §4.3/§8.1） */
+    void updateFileProgress(UUID taskId, int fileIndex, long verifiedBytes);
+
+    /** 资源下未删除任务数（GC 判定：为 0 才允许回收共享数据，规格 §10.2） */
+    long countNonDeletedByResource(UUID resourceId);
 }

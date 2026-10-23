@@ -184,24 +184,31 @@ export default function TaskDetailPage() {
           <Button icon={<ReloadOutlined />} loading={loading} onClick={loadAll}>
             刷新
           </Button>
-          {actions.pause && task && (
-            <Button onClick={() => act(() => client.post(`/tasks/${task.id}/pause`), '已暂停')}>暂停</Button>
-          )}
-          {actions.resume && task && (
-            <Button type="primary" onClick={() => act(() => client.post(`/tasks/${task.id}/resume`), '已恢复')}>
-              恢复下载
-            </Button>
-          )}
-          {actions.retry && task && (
-            <Button type="primary" onClick={() => act(() => client.post(`/tasks/${task.id}/retry`), '已重试')}>
-              重试任务
-            </Button>
-          )}
-          {actions.del && (
-            <Button danger onClick={confirmDelete}>
-              删除
-            </Button>
-          )}
+          <Button
+            disabled={!actions.pause || !task}
+            onClick={() => task && act(() => client.post(`/tasks/${task.id}/pause`), '已暂停')}
+          >
+            暂停
+          </Button>
+          <Button
+            type="primary"
+            ghost
+            disabled={!actions.resume || !task}
+            onClick={() => task && act(() => client.post(`/tasks/${task.id}/resume`), '已恢复')}
+          >
+            恢复下载
+          </Button>
+          <Button
+            type="primary"
+            ghost
+            disabled={!actions.retry || !task}
+            onClick={() => task && act(() => client.post(`/tasks/${task.id}/retry`), '已重试')}
+          >
+            重试任务
+          </Button>
+          <Button danger disabled={!actions.del || !task} onClick={confirmDelete}>
+            删除
+          </Button>
         </Space>
       </div>
 
@@ -229,6 +236,11 @@ export default function TaskDetailPage() {
                 <span className="tabular-nums">{task.completedAt ? formatTime(task.completedAt) : '-'}</span>
               </Descriptions.Item>
               <Descriptions.Item label="目标子目录">{task.targetSubdirectory || '根目录'}</Descriptions.Item>
+              {task.errorMessage && (
+                <Descriptions.Item label="错误信息" span={3}>
+                  <Typography.Text type="danger">{task.errorMessage}</Typography.Text>
+                </Descriptions.Item>
+              )}
             </Descriptions>
           </Card>
         )}
@@ -257,6 +269,28 @@ export default function TaskDetailPage() {
                     {v || exportByIndex.get(r.fileIndex)?.relativePath || `文件 #${r.fileIndex}`}
                   </Typography.Text>
                 ),
+              },
+              {
+                title: '文件校验进度',
+                key: 'fileProgress',
+                width: 180,
+                render: (_, r) => {
+                  if (!r.selected) {
+                    return <Typography.Text type="secondary">-</Typography.Text>;
+                  }
+                  const exp = exportByIndex.get(r.fileIndex);
+                  const total = r.sizeBytes || exp?.bytes || 0;
+                  const verified = exp?.state === 'READY' ? exp.bytes : r.verifiedBytes;
+                  const pct = total > 0 ? Math.min(100, Math.round((verified * 1000) / total) / 10) : 0;
+                  return (
+                    <Progress
+                      percent={pct}
+                      size="small"
+                      style={{ margin: 0 }}
+                      status={exp?.state === 'FAILED' ? 'exception' : pct >= 100 ? 'success' : 'active'}
+                    />
+                  );
+                },
               },
               {
                 title: '已验证 / 大小',

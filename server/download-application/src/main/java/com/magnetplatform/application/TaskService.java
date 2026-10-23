@@ -22,6 +22,10 @@ import com.magnetplatform.spi.EngineOptions;
 import com.magnetplatform.spi.EngineSession;
 import com.magnetplatform.spi.EngineSnapshot;
 import com.magnetplatform.spi.ResourceDescriptor;
+import com.magnetplatform.spi.ResumeSnapshot;
+import com.magnetplatform.spi.SessionState;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,6 +47,8 @@ import java.util.stream.Collectors;
  */
 @Service
 public class TaskService {
+
+    private static final Logger log = LoggerFactory.getLogger(TaskService.class);
 
     private final DownloadTaskRepository tasks;
     private final TaskEventRepository events;
@@ -222,9 +228,11 @@ public class TaskService {
 
     // ---------- 调度器协同（TaskDispatcher 调用） ----------
 
-    /** 扫描待调度任务：QUEUED 启动、PAUSING 收需求、RETRY_WAIT 重入队、活跃任务刷进度 */
+    /** 扫描待调度任务：恢复会话、QUEUED 启动、PAUSING 收需求、RETRY_WAIT 重入队、活跃任务刷进度 */
     @Transactional
     public void dispatchTick(int maxActivePerUser) {
+        // 0. 重启恢复：重新挂载可恢复会话到引擎（规格 §12.1）
+        recoverSessions();
         LocalDateTime now = LocalDateTime.now();
         // 1. RETRY_WAIT → QUEUED
         for (DownloadTask t : tasks.findByStatuses(List.of(TaskStatus.RETRY_WAIT), 100)) {
@@ -263,51 +271,152 @@ public class TaskService {
         pushDemandAndRefreshProgress();
     }
 
-    /** 对账完成判定：verified >= selected → VERIFYING → COMPLETED（规格 §5.1） */
+    /** 重启恢复：扫描可恢复会话并重新挂载到引擎（规格 §12.1）。
+     * 每个会话加载资源元数据与 resume 字节后调用 createOrAttach，缺失 resume 用空数组触发引擎重新校验磁盘。 */
+    @Transactional
+    public void recoverSessions() {
+        DownloadEngine engine = libtorrentEngine();
+        if (engine == null) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        for (EngineSessionRecord session : sessions.findRecoverable()) {
+            TorrentResource resource = resources.findById(session.getResourceId()).orElse(null);
+            if (resource == null || !resource.metadataReady() || resource.getMetadataPath() == null) {
+                continue;
+            }
+            byte[] torrentBytes = torrentStorage.loadTorrent(resource.getMetadataPath()).orElse(null);
+            if (torrentBytes == null) {
+                continue;
+            }
+            byte[] resumeBytes = downloadStorage.readResume(session.getResourceId()).orElse(new byte[0]);
+            try {
+                EngineSession attached = engine.createOrAttach(
+                        new ResourceDescriptor(resource.getId().toString(), resource.getBtih(), resource.getBtmh(),
+                                resource.getVersionType().name(), resource.getMetadataPath(), resource.getTrackers(),
+                                torrentBytes, downloadStorage.resourceRoot(resource.getId()).toString(), resumeBytes),
+                        new EngineOptions(false, "default"));
+                sessions.updateState(session.getId(), attached.state().name(), now);
+            } catch (RuntimeException e) {
+                log.warn("会话恢复失败 resource={}: {}", session.getResourceId(), e.getMessage());
+            }
+        }
+    }
+
+    /** 需求并集下发 + 按文件精确对账进度 + 完成判定 + 共享会话生命周期（规格 §4.3/§5.1/§5.3/§7）。
+     * 以会话为驱动单元：即使某资源无活跃任务，也需在无需求时暂停会话并落盘 resume。 */
     @Transactional
     public void pushDemandAndRefreshProgress() {
-        List<DownloadTask> actives = tasks.findByStatuses(
-                List.of(TaskStatus.DOWNLOADING, TaskStatus.VERIFYING), 500);
-        Map<UUID, List<DownloadTask>> byResource = actives.stream()
+        DownloadEngine engine = libtorrentEngine();
+        if (engine == null) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        // 活跃任务：含 DOWNLOADING/VERIFYING 用于刷进度，也包含 REPAIRING 以便重新入队后对账
+        Map<UUID, List<DownloadTask>> activesByResource = tasks.findByStatuses(
+                List.of(TaskStatus.DOWNLOADING, TaskStatus.VERIFYING, TaskStatus.REPAIRING), 500).stream()
                 .collect(Collectors.groupingBy(DownloadTask::getResourceId));
-        for (Map.Entry<UUID, List<DownloadTask>> entry : byResource.entrySet()) {
-            UUID resourceId = entry.getKey();
-            EngineSessionRecord session = sessions.findByResource(resourceId, EngineKind.LIBTORRENT.name())
-                    .orElse(null);
-            if (session == null) {
-                continue;
-            }
-            DownloadEngine engine = libtorrentEngine();
-            if (engine == null) {
-                continue;
-            }
+
+        for (EngineSessionRecord session : sessions.findRecoverable()) {
+            UUID resourceId = session.getResourceId();
             Set<Integer> demand = demandUnion(resourceId);
-            engine.setDemand(session.getId().toString(), demand);
-            EngineSnapshot snap = engine.snapshot(session.getId().toString());
-            LocalDateTime now = LocalDateTime.now();
-            for (DownloadTask t : entry.getValue()) {
-                if (t.getStatus() == TaskStatus.DOWNLOADING && t.getSelectedBytes() > 0) {
-                    long share = Math.min(t.getSelectedBytes(),
-                            snap.verifiedBytes() * t.getSelectedBytes()
-                                    / Math.max(1, resourceTotalBytes(resourceId)));
-                    if (share != t.getVerifiedBytes()) {
-                        update(t.withProgress(share, now));
+            String sessionId = session.getId().toString();
+
+            // 共享会话生命周期：无需求时落盘 resume 并暂停；有需求时从 IDLE 恢复（规格 §4.3/§5.3）
+            if (demand.isEmpty()) {
+                if (!"IDLE".equals(session.getState())) {
+                    persistResumeAndPause(engine, session, resourceId, now);
+                }
+                continue;
+            }
+            if ("IDLE".equals(session.getState())) {
+                engine.resumeSession(sessionId);
+                sessions.updateState(session.getId(), SessionState.ACTIVE.name(), now);
+                session = sessions.findByResource(resourceId, EngineKind.LIBTORRENT.name()).orElse(session);
+            }
+            engine.setDemand(sessionId, demand);
+            EngineSnapshot snap = engine.snapshot(sessionId);
+            sessions.updateState(session.getId(), snap.state().name(), now);
+
+            Map<Integer, Long> fileSizes = resources.findFiles(resourceId).stream()
+                    .collect(Collectors.toMap(TorrentFileInfo::getFileIndex, TorrentFileInfo::getSizeBytes));
+            List<Long> fileVerified = snap.fileVerifiedBytes();
+
+            for (DownloadTask t : activesByResource.getOrDefault(resourceId, List.of())) {
+                List<DownloadTaskFile> taskFiles = tasks.findFiles(t.getId());
+                long taskVerified = 0L;
+                boolean allSelectedComplete = true;
+                for (DownloadTaskFile tf : taskFiles) {
+                    if (!tf.isSelected()) {
+                        continue;
                     }
-                    if (share >= t.getSelectedBytes()) {
-                        DownloadTask current = tasks.findById(t.getId()).orElseThrow();
-                        transition(current, TaskStatus.VERIFYING);
+                    long fileSize = fileSizes.getOrDefault(tf.getFileIndex(), 0L);
+                    long verified = fileIndexSafe(fileVerified, tf.getFileIndex());
+                    verified = Math.min(verified, fileSize);
+                    tasks.updateFileProgress(t.getId(), tf.getFileIndex(), verified);
+                    taskVerified += verified;
+                    if (verified < fileSize) {
+                        allSelectedComplete = false;
                     }
-                } else if (t.getStatus() == TaskStatus.VERIFYING && snap.metadataReady()) {
-                    DownloadTask completed = transition(t, TaskStatus.COMPLETED)
-                            .withCompletedAt(now, now);
-                    update(completed);
-                    events.append(t.getId(), "STATUS", "{\"status\":\"COMPLETED\"}");
-                    if (exportService != null) {
-                        exportService.materializeCompleted(completed);
+                }
+                taskVerified = Math.min(taskVerified, t.getSelectedBytes());
+                DownloadTask reloaded = tasks.findById(t.getId()).orElse(t);
+                if (taskVerified != reloaded.getVerifiedBytes()) {
+                    update(reloaded.withProgress(taskVerified, now));
+                    reloaded = tasks.findById(t.getId()).orElse(reloaded);
+                }
+
+                switch (reloaded.getStatus()) {
+                    case DOWNLOADING -> {
+                        if (allSelectedComplete && t.getSelectedBytes() > 0) {
+                            transition(reloaded, TaskStatus.VERIFYING);
+                        }
                     }
+                    case VERIFYING -> {
+                        if (allSelectedComplete && snap.metadataReady()) {
+                            DownloadTask completed = transition(reloaded, TaskStatus.COMPLETED)
+                                    .withCompletedAt(now, now);
+                            update(completed);
+                            events.append(t.getId(), "STATUS", "{\"status\":\"COMPLETED\"}");
+                            if (exportService != null) {
+                                exportService.materializeCompleted(completed);
+                            }
+                        }
+                    }
+                    case REPAIRING -> {
+                        // 完整性失败后重新入队下载（规格 §5.1）
+                        transition(reloaded, TaskStatus.QUEUED);
+                    }
+                    default -> { /* no-op */ }
                 }
             }
         }
+    }
+
+    /** 无需求时保存 resume 并暂停共享会话（规格 §12.1：先落盘临时文件 fsync 原子 rename）。 */
+    private void persistResumeAndPause(DownloadEngine engine, EngineSessionRecord session,
+                                       UUID resourceId, LocalDateTime now) {
+        String sessionId = session.getId().toString();
+        try {
+            ResumeSnapshot resume = engine.saveResume(sessionId);
+            if (resume != null && resume.data() != null && resume.data().length > 0) {
+                downloadStorage.writeResumeAtomically(resourceId, resume.data());
+                sessions.updateResume(session.getId(), resume.resumeVersion(),
+                        downloadStorage.resumeFile(resourceId).toString(), now);
+            }
+        } catch (RuntimeException e) {
+            log.warn("保存 resume 失败 resource={}: {}", resourceId, e.getMessage());
+        }
+        engine.pauseSession(sessionId);
+        sessions.updateState(session.getId(), SessionState.IDLE.name(), now);
+    }
+
+    private static long fileIndexSafe(List<Long> fileVerified, int index) {
+        if (fileVerified == null || index < 0 || index >= fileVerified.size()) {
+            return 0L;
+        }
+        Long v = fileVerified.get(index);
+        return v == null ? 0L : v;
     }
 
     /** SSE/REST 通用：任务事件补拉（规格 §9.2） */
@@ -390,10 +499,6 @@ public class TaskService {
         return union;
     }
 
-    private long resourceTotalBytes(UUID resourceId) {
-        return resources.findById(resourceId).map(r -> r.getTotalBytes() == null ? 0L : r.getTotalBytes()).orElse(0L);
-    }
-
     private static Set<Integer> validateFileIndices(List<Integer> fileIndices, List<TorrentFileInfo> allFiles) {
         if (fileIndices == null || fileIndices.isEmpty()) {
             throw new DomainException(ErrorCodes.VALIDATION, "fileIndices 不可为空");
@@ -412,16 +517,20 @@ public class TaskService {
         if (raw == null || raw.isBlank()) {
             return "";
         }
-        String normalized = raw.replace('\\', '/');
+        String trimmed = raw.trim();
+        if (trimmed.startsWith("/") || trimmed.startsWith("\\")) {
+            throw new DomainException(ErrorCodes.INVALID_PATH, "targetSubdirectory 不允许绝对路径");
+        }
+        String normalized = trimmed.replace('\\', '/');
         List<String> parts = new ArrayList<>();
         for (String part : normalized.split("/")) {
             if (part.isBlank() || part.equals(".")) {
                 continue;
             }
             if (part.equals("..") || part.contains(":")) {
-                throw new DomainException(ErrorCodes.VALIDATION, "targetSubdirectory 含非法路径片段");
+                throw new DomainException(ErrorCodes.INVALID_PATH, "targetSubdirectory 含非法路径片段");
             }
-            parts.add(part);
+            parts.add(com.magnetplatform.domain.torrent.PathSanitizer.sanitizeComponent(part));
         }
         return String.join("/", parts);
     }

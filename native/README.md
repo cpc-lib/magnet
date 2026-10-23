@@ -11,15 +11,18 @@ native/
 ├── libtorrent-worker/
 │   ├── CMakeLists.txt          # protoc 生成链 + 链接配置
 │   └── src/main.cpp            # DownloadEngine 服务实现
-└── proto/
-    └── download_engine.proto   # Java ↔ C++ 契约（package magnetplatform.engine.v1）
+├── proto/
+│   └── download_engine.proto   # Java ↔ C++ 契约（package magnetplatform.engine.v1）
+└── test-fixtures/
+    ├── create_v1_fixture.py    # 生成确定性 32 KiB V1 测试夹具（payload.txt + payload.torrent）
+    ├── verify_worker.ps1       # 端到端 Worker Smoke + Resume 恢复 + 坏块重检验证脚本
+    └── README.md               # 夹具与验证说明
 ```
 
 ## 构建镜像
 
 ```powershell
-cd d:\release\magnet\magnet-platform\native
-docker build -t magnet-libtorrent-worker:test .
+docker build -t magnet-libtorrent-worker:test -t magnet-libtorrent-worker:latest native
 ```
 
 > build context 必须是 `native/`（Dockerfile 需要同时 COPY `proto/` 和 `libtorrent-worker/`）。
@@ -30,7 +33,7 @@ docker build -t magnet-libtorrent-worker:test .
 ### 方式一：docker compose（推荐，与 MySQL/Redis 一起）
 
 ```powershell
-docker compose -f d:\release\magnet\magnet-platform\infra\docker-compose.yml up -d libtorrent-worker
+docker compose -f infra/docker-compose.yml up -d
 ```
 
 ### 方式二：docker run（临时调试）
@@ -103,34 +106,26 @@ Spring Boot 启动日志出现 `[grpc-libtorrent] Worker 就绪 ok=true` 即全�
 | RemoveTorrent | ✅（缺失 resource_id 幂等成功；`remove_unreferenced_data=true` 删除文件） |
 | StreamAlerts | ⚠️ 当前不在本 Task 3 范围内 |
 
-## Smoke checklist
+## Smoke checklist 与端到端验证
 
-以下步骤覆盖 Task 3 的 native RPC 合同。先在 `native/` 目录执行：
-
-```powershell
-$fixture = Join-Path $env:TEMP ("magnet-worker-" + [guid]::NewGuid())
-python -c "import hashlib, pathlib, sys; d = pathlib.Path(sys.argv[1]); d.mkdir(parents=True); p = bytes(range(256)) * 128; (d / 'payload.txt').write_bytes(p); h = b''.join(hashlib.sha1(p[i:i+16384]).digest() for i in (0, 16384)); (d / 'payload.torrent').write_bytes(b'd4:infod6:lengthi32768e4:name11:payload.txt12:piece lengthi16384e6:pieces40:' + h + b'ee')" $fixture
-docker run -d --name magnet-worker-smoke `
-  -p 50051:50051 `
-  -v "${fixture}:/data" `
-  magnet-libtorrent-worker:test
-```
-
-然后用现有 Python `grpcio`/`grpcio-tools` 生成 `download_engine_pb2*.py`，对 `localhost:50051` 依次调用：
-
-1. `Health`：`ok=true`。
-2. `AddTorrent`：传入 `payload.torrent`，`storage_path=/data`，预期 `accepted=true`。
-3. `UpdateFilePriorities`：传入 `[1]`，预期 `accepted=true`。
-4. `GetSnapshot`：预期 `file_verified_bytes` 恰好 1 个值（V1 fixture 只有一个文件）。
-5. `SaveResumeData`：预期 `accepted=true`、`resume_data` 非空、`resume_version >= 1`。
-6. `Pause`、`Resume`：都预期 `accepted=true`。
-7. `RemoveTorrent(remove_unreferenced_data=true)`：预期 `accepted=true`；等待挂载目录的异步文件删除完成后，确认其中的 `payload.txt` 已被删除。
-
-清理 smoke 容器：
+一键执行确定性 V1 夹具生成、镜像构建、全部生命周期 RPC、容器重启后 Resume 恢复与坏块重检验证：
 
 ```powershell
-docker rm -f magnet-worker-smoke
+python native/test-fixtures/create_v1_fixture.py native/test-fixtures/out
+powershell -ExecutionPolicy Bypass -File native/test-fixtures/verify_worker.ps1
 ```
+
+验证步骤涵盖：
+
+1. `Health`：`ok=true, worker_id=local-worker-1, libtorrent_version=2.0.8`。
+2. 路径安全边界：拒绝 `/data` 根目录之外的 `storage_path`（如 `/etc/escape`）。
+3. `AddTorrent`：传入 `payload.torrent`，`storage_path=/data/resources/<resourceId>`，预期 `accepted=true`。
+4. `UpdateFilePriorities`：传入 `[1]`，预期 `accepted=true`。
+5. `GetSnapshot`：预期 `file_verified_bytes=[32768]`（按 `piece_granularity` 精确校验 2 个 16 KiB 分块）。
+6. `SaveResumeData`：预期 `accepted=true`、`resume_data` 非空、`resume_version >= 1`。
+7. `Pause`、`Resume`：均预期 `accepted=true`。
+8. 重启恢复与坏块重检：重启容器后用已保存 `resume_data` 恢复为 `[32768]`；篡改第 2 个分块并以空 resume 重检，进度回落为 `[16384]`。
+9. `RemoveTorrent(remove_unreferenced_data=true)`：预期 `accepted=true`，底层 `payload.txt` 被删除。
 
 ## 已知简化项
 

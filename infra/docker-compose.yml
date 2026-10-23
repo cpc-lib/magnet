@@ -45,11 +45,14 @@ services:
 
   libtorrent-worker:
     image: magnet-libtorrent-worker:latest
+    build:
+      context: ../native
     container_name: magnet-worker
     ports:
       - "0.0.0.0:50051:50051"   # gRPC
       - "0.0.0.0:6881:6881"     # DHT
       - "0.0.0.0:6881:6881/udp"
+    # API 在宿主机 server/download-api 下以 STORAGE_ROOT=./data 运行时，与 Worker 的 /data 共享同一物理目录
     volumes:
       - ../server/download-api/data:/data
     restart: unless-stopped

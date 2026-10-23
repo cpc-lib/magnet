@@ -22,4 +22,6 @@ public interface FileExportMapper {
                      @Param("updatedAt") LocalDateTime updatedAt);
 
     void deleteOwnedByTask(@Param("userId") UUID userId, @Param("taskId") UUID taskId);
+
+    long countActiveByResource(@Param("resourceId") UUID resourceId);
 }

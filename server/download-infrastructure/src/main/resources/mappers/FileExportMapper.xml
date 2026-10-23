@@ -52,4 +52,9 @@
     <delete id="deleteOwnedByTask">
         DELETE FROM file_export WHERE user_id = #{userId} AND task_id = #{taskId}
     </delete>
+
+    <select id="countActiveByResource" resultType="long">
+        SELECT COUNT(*) FROM file_export
+        WHERE resource_id = #{resourceId} AND state != 'DELETED'
+    </select>
 </mapper>
