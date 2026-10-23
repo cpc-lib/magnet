@@ -11,12 +11,8 @@ native/
 ├── libtorrent-worker/
 │   ├── CMakeLists.txt          # protoc 生成链 + 链接配置
 │   └── src/main.cpp            # DownloadEngine 服务实现
-├── proto/
-│   └── download_engine.proto   # Java ↔ C++ 契约（package magnetplatform.engine.v1）
-└── test-fixtures/
-    ├── create_v1_fixture.py    # 生成确定性 32 KiB V1 测试夹具（payload.txt + payload.torrent）
-    ├── verify_worker.ps1       # 端到端 Worker Smoke + Resume 恢复 + 坏块重检验证脚本
-    └── README.md               # 夹具与验证说明
+└── proto/
+    └── download_engine.proto   # Java ↔ C++ 契约（package magnetplatform.engine.v1）
 ```
 
 ## 构建镜像
@@ -105,27 +101,6 @@ Spring Boot 启动日志出现 `[grpc-libtorrent] Worker 就绪 ok=true` 即全�
 | Resume | ✅（缺失 resource_id 幂等成功） |
 | RemoveTorrent | ✅（缺失 resource_id 幂等成功；`remove_unreferenced_data=true` 删除文件） |
 | StreamAlerts | ⚠️ 当前不在本 Task 3 范围内 |
-
-## Smoke checklist 与端到端验证
-
-一键执行确定性 V1 夹具生成、镜像构建、全部生命周期 RPC、容器重启后 Resume 恢复与坏块重检验证：
-
-```powershell
-python native/test-fixtures/create_v1_fixture.py native/test-fixtures/out
-powershell -ExecutionPolicy Bypass -File native/test-fixtures/verify_worker.ps1
-```
-
-验证步骤涵盖：
-
-1. `Health`：`ok=true, worker_id=local-worker-1, libtorrent_version=2.0.8`。
-2. 路径安全边界：拒绝 `/data` 根目录之外的 `storage_path`（如 `/etc/escape`）。
-3. `AddTorrent`：传入 `payload.torrent`，`storage_path=/data/resources/<resourceId>`，预期 `accepted=true`。
-4. `UpdateFilePriorities`：传入 `[1]`，预期 `accepted=true`。
-5. `GetSnapshot`：预期 `file_verified_bytes=[32768]`（按 `piece_granularity` 精确校验 2 个 16 KiB 分块）。
-6. `SaveResumeData`：预期 `accepted=true`、`resume_data` 非空、`resume_version >= 1`。
-7. `Pause`、`Resume`：均预期 `accepted=true`。
-8. 重启恢复与坏块重检：重启容器后用已保存 `resume_data` 恢复为 `[32768]`；篡改第 2 个分块并以空 resume 重检，进度回落为 `[16384]`。
-9. `RemoveTorrent(remove_unreferenced_data=true)`：预期 `accepted=true`，底层 `payload.txt` 被删除。
 
 ## 已知简化项
 

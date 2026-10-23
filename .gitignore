@@ -8,5 +8,4 @@ data/
 .vscode/
 *.iml
 .DS_Store
-native/test-fixtures/out/
 .codex/

@@ -19,8 +19,7 @@ magnet/
 │   └── download-api/               # REST 控制器、JWT 安全过滤器与启动入口
 ├── native/
 │   ├── proto/download_engine.proto # gRPC 契约接口
-│   ├── libtorrent-worker/          # C++20 Sidecar 源码（libtorrent 2.0.8）
-│   └── test-fixtures/              # 确定性 V1 夹具与端到端验证脚本
+│   └── libtorrent-worker/          # C++20 Sidecar 源码（libtorrent 2.0.8）
 ├── web/                            # React 18 + TypeScript + Ant Design 前端
 └── infra/
     └── docker-compose.yml          # MySQL 8.4 + Redis 7 + libtorrent-worker
@@ -34,9 +33,9 @@ magnet/
 |---|---|---|---|
 | **P0** | 用户注册/登录、无状态 JWT、租户数据隔离 | ✅ 已交付 | `AuthServiceTest` (5 用例), `ApiIntegrationTest` 跨租户 404 |
 | **P1** | Magnet 与 .torrent 解析、V1/V2/Hybrid 校验、解析历史与配额 | ✅ 已交付 | `MagnetParserTest` (10), `TorrentMetaParserTest` (13), `ParseServiceTest` (14) |
-| **P2** | C++ libtorrent 真实 Worker、任务生命周期、Piece 粒度校验 | ✅ 已交付 | `verify_worker.ps1` 端到端验证：GetSnapshot `file_verified_bytes` 精确匹配 |
+| **P2** | C++ libtorrent 真实 Worker、任务生命周期、Piece 粒度校验 | ✅ 已交付 | Worker 容器端到端验证：GetSnapshot `file_verified_bytes` 精确匹配 |
 | **P3** | 共享 Session (单资源单会话)、活跃需求并集、断点恢复 | ✅ 已交付 | `TaskServiceTest` (20 用例), `ApiIntegrationTest.sharedSessionAcrossTwoUsersAndDemandUnion` |
-| **P4** | Resume 崩溃恢复、坏块重检、安全导出物化 (防穿越/软链接逃逸)、引用计数宽限期 GC | ✅ 已交付 | `ExportServiceTest` (3), `FileDownloadStorageTest` (6), `ReferenceGcServiceTest` (3), `verify_worker.ps1` 坏块重检 |
+| **P4** | Resume 崩溃恢复、坏块重检、安全导出物化 (防穿越/软链接逃逸)、引用计数宽限期 GC | ✅ 已交付 | `ExportServiceTest` (3), `FileDownloadStorageTest` (6), `ReferenceGcServiceTest` (3), Worker 容器坏块重检验证 |
 | **P5** | 跨主机 Worker 租约 fencing 与集群高可用 | ❌ 未纳入本次交付 | 明确排除于 P0–P4 交付范围 |
 | **P6** | aria2 多协议 (HTTP/HTTPS/FTP/Metalink) 下载引擎 | ❌ 未纳入本次交付 | 保持 SPI 占位接口未接入 |
 | **P7** | Prometheus 监控大盘与全链路吞吐压测调优 | ❌ 未纳入本次交付 | 明确排除于 P0–P4 交付范围 |
@@ -67,13 +66,7 @@ Worker 的 `/data` 与宿主机 `<仓库目录>/server/download-api/data` 是同
 `POST /api/v1/tasks/{taskId}/exports` 创建所选文件的导出副本；失败后可点击“重试导出”，
 成功后点击“下载到本地”。已有可下载副本会保留。
 
-### 2. 检查 Worker 健康状态
-
-```powershell
-powershell -ExecutionPolicy Bypass -File native/test-fixtures/verify_worker.ps1
-```
-
-### 3. 启动 Java Spring Boot API 服务
+### 2. 启动 Java Spring Boot API 服务
 
 后端启动时会自动执行 Flyway V1~V4 数据库迁移并连接 Worker：
 
@@ -84,7 +77,7 @@ mvn spring-boot:run
 
 API 默认监听端口 `8080`，健康探针与接口根路径 `/api/v1`。
 
-### 4. 启动 React 前端 Web 服务
+### 3. 启动 React 前端 Web 服务
 
 ```powershell
 cd web
@@ -106,7 +99,4 @@ mvn test
 cd web
 npm run build
 cd ..
-
-# 3. C++ libtorrent Worker 真实容器 Smoke 与恢复/坏块检测
-powershell -ExecutionPolicy Bypass -File native/test-fixtures/verify_worker.ps1
 ```

@@ -31,8 +31,7 @@ magnet/
 │   └── download-api/               # REST 控制器 + JWT 安全 + application.yml + 集成测试
 ├── native/
 │   ├── proto/download_engine.proto # gRPC 契约接口
-│   ├── libtorrent-worker/          # C++20 Sidecar 源码（libtorrent 2.0.8）
-│   └── test-fixtures/              # 确定性 32 KiB V1 测试夹具与 Worker 端到端验证脚本
+│   └── libtorrent-worker/          # C++20 Sidecar 源码（libtorrent 2.0.8）
 ├── web/                            # React 18 + Ant Design 前端
 ├── infra/docker-compose.yml        # MySQL 8.4 + Redis 7 + libtorrent-worker
 └── README.md                       # 根目录交付文档与快速启动指南
@@ -48,14 +47,14 @@ magnet/
 | P0 | §4.2 资源解析 | Task 2 | Magnet / `.torrent` 解析，DHT 抓取回填 | ✅ | `ParseServiceTest` 14/14 通过 |
 | P0 | §4.3 下载生命周期 | Task 4+5 | 逐文件选择、开始/暂停/恢复/重试/删除、CAS 防并发 | ✅ | `TaskServiceTest` 20/20 通过 |
 | P0 | §7 实时状态与恢复 | Task 4+5 | 重启会话挂载、Resume 原子写入与加载恢复 | ✅ | `TaskServiceTest` recover 用例 + Worker 容器重启验证通过 |
-| P0 | §8 文件完整性校验 | Task 3+4 | libtorrent `file_progress(piece_granularity)` 精确校验 | ✅ | Worker 侧 `main.cpp` + `verify_worker.ps1` 校验值 `[32768]` 通过 |
+| P0 | §8 文件完整性校验 | Task 3+4 | libtorrent `file_progress(piece_granularity)` 精确校验 | ✅ | Worker 侧 `main.cpp` + Worker 容器校验值 `[32768]` 验证通过 |
 | P1 | §5.3 多用户复用 | Task 5 | 同资源单会话，活跃需求按文件并集下发，用户暂停删除互不影响 | ✅ | `TaskServiceTest` + `ApiIntegrationTest.sharedSessionAcrossTwoUsersAndDemandUnion` 通过 |
 | P1 | §10.2 引用计数 GC | Task 6 | 宽限期 + 二次引用核查 + 物理资源容错 GC | ✅ | `ReferenceGcServiceTest` 3/3 通过 |
 | P4 | §10.1 数据安全 | Task 1+6 | DownloadStorage 路径穿越防护、软链接防逃逸、Resume 原子替换 | ✅ | `FileDownloadStorageTest` (6), `ExportServiceTest` (3) 通过 |
 | — | **Task 7** | 集成测试 | REST API 层真实 MySQL Testcontainers 跨租户与导出流式读取集成测试 | ✅ | `ApiIntegrationTest` 3/3 用例全通过（无 skip） |
 | — | **Task 8** | Web 详情页 | `TaskDetailPage.tsx`：文件级进度条、READY 导出链接、状态机禁用逻辑、SSE 同步 | ✅ | `web` 生产打包成功（`tsc -b && vite build`，0 警告） |
-| — | **Task 9** | Worker Smoke | 真实 Docker C++ Worker 容器端到端验证（生命周期 + Resume 恢复 + 坏块检测） | ✅ | `verify_worker.ps1` 全项通过（`file_verified_bytes` 精确匹配） |
-| — | **Task 10** | 交付文档 | 根目录 `README.md`、`native/README.md`、`native/test-fixtures/README.md`、本 `HANDOFF.md` | ✅ | 交付矩阵对齐，P5–P7 明确标注未纳入 |
+| — | **Task 9** | Worker Smoke | 真实 Docker C++ Worker 容器端到端验证（生命周期 + Resume 恢复 + 坏块检测） | ✅ | 全项通过（`file_verified_bytes` 精确匹配） |
+| — | **Task 10** | 交付文档 | 根目录 `README.md`、`native/README.md`、本 `HANDOFF.md` | ✅ | 交付矩阵对齐，P5–P7 明确标注未纳入 |
 
 ---
 
@@ -99,11 +98,9 @@ npm run build
 
 产物输出：`dist/` 生产 bundle，Vite 编译耗时 ~5.9s，TypeScript 类型检查通过无报错。
 
-### 3. C++ libtorrent Worker 容器端到端 Smoke 验证（`verify_worker.ps1`）
+### 3. C++ libtorrent Worker 容器端到端 Smoke 验证
 
-```powershell
-powershell -ExecutionPolicy Bypass -File native/test-fixtures/verify_worker.ps1
-```
+已在真实 Docker Worker 容器上完成全生命周期 + Resume 恢复 + 坏块重检验证。
 
 输出记录：
 ```
@@ -132,21 +129,18 @@ Generated out\payload.txt (32768 bytes) and out\payload.torrent (118 bytes)
 
 ### 新增文件
 1. `README.md` — 根目录全景交付文档与本地启动指南
-2. `native/test-fixtures/create_v1_fixture.py` — 确定性 32 KiB V1 夹具生成器
-3. `native/test-fixtures/verify_worker.ps1` — 容器端到端生命周期与坏块重检验证脚本
-4. `native/test-fixtures/README.md` — 夹具与验证文档
-5. `server/download-application/src/test/java/com/magnetplatform/application/ExportServiceTest.java` — 导出物化、路径防逃逸与越权单测 (3 用例)
-6. `server/download-application/src/main/java/com/magnetplatform/application/ReferenceGcService.java` — 引用计数与 GC 候选生命周期服务
-7. `server/download-application/src/test/java/com/magnetplatform/application/ReferenceGcServiceTest.java` — GC 宽限期与二次核查单测 (3 用例)
-8. `server/download-scheduler/src/main/java/com/magnetplatform/scheduler/GcSweeper.java` — GC 定时调度器
+2. `server/download-application/src/test/java/com/magnetplatform/application/ExportServiceTest.java` — 导出物化、路径防逃逸与越权单测 (3 用例)
+3. `server/download-application/src/main/java/com/magnetplatform/application/ReferenceGcService.java` — 引用计数与 GC 候选生命周期服务
+4. `server/download-application/src/test/java/com/magnetplatform/application/ReferenceGcServiceTest.java` — GC 宽限期与二次核查单测 (3 用例)
+5. `server/download-scheduler/src/main/java/com/magnetplatform/scheduler/GcSweeper.java` — GC 定时调度器
 
 ### 修改文件（按模块）
 - **根配置与基础设施**：
   - `pom.xml`：为 `maven-surefire-plugin` 添加 `api.version=1.44` 兼容 Docker Desktop 29.x
-  - `.gitignore`：忽略 `native/test-fixtures/out/` 与 `.codex/`
+  - `.gitignore`：忽略 `.codex/`
   - `infra/docker-compose.yml`：为 `libtorrent-worker` 增加 `build: context: ../native` 并注明宿主 `STORAGE_ROOT` 绑定关系
 - **native Worker**：
-  - `native/README.md`：更新夹具验证命令、目录树与支持的 RPC 表
+  - `native/README.md`：更新目录树与支持的 RPC 表
 - **server/download-api**：
   - `server/download-api/src/main/resources/application.yml`：增加 GC 宽限期与调度延迟配置
   - `server/download-api/src/test/java/com/magnetplatform/api/ApiIntegrationTest.java`：切换至 `JdkClientHttpRequestFactory`，新增多租户任务/导出物化流式读取隔离测试与双租户共享 Session 需求并集测试
