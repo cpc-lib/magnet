@@ -14,6 +14,7 @@ import com.magnetplatform.spi.SessionState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -34,16 +35,24 @@ public class Aria2JsonRpcEngine implements DownloadEngine {
     private static final Logger log = LoggerFactory.getLogger(Aria2JsonRpcEngine.class);
 
     private final Aria2Client client;
+    private final String storageRoot;
 
+    @Autowired
     public Aria2JsonRpcEngine(
             @Value("${magnet.engine.aria2.rpc.endpoint:http://localhost:6800/jsonrpc}") String endpoint,
             @Value("${magnet.engine.aria2.rpc.secret:}") String secret,
-            @Value("${magnet.engine.aria2.rpc.timeout-seconds:10}") int timeoutSeconds) {
-        this(new Aria2Client(endpoint, secret, Duration.ofSeconds(timeoutSeconds)));
+            @Value("${magnet.engine.aria2.rpc.timeout-seconds:10}") int timeoutSeconds,
+            @Value("${magnet.engine.aria2.rpc.storage-root:/data}") String storageRoot) {
+        this(new Aria2Client(endpoint, secret, Duration.ofSeconds(timeoutSeconds)), storageRoot);
     }
 
     public Aria2JsonRpcEngine(Aria2Client client) {
+        this(client, "/data");
+    }
+
+    public Aria2JsonRpcEngine(Aria2Client client, String storageRoot) {
         this.client = client;
+        this.storageRoot = storageRoot.replace('\\', '/').replaceAll("/+$", "");
     }
 
     @Override
@@ -76,18 +85,32 @@ public class Aria2JsonRpcEngine implements DownloadEngine {
             log.info("[aria2] attach 现有任务 resourceId={} gid={} state={}", resource.resourceId(), gid, state);
             return new EngineSession(resource.resourceId(), EngineKind.ARIA2, state);
         } catch (Aria2RpcException e) {
+            if (!isMissing(e)) throw e;
             // 不存在则创建新下载
             log.info("[aria2] 任务尚未在 aria2 中创建，发起 addUri resourceId={} gid={}", resource.resourceId(), gid);
         }
 
         Map<String, Object> rpcOptions = new HashMap<>();
-        rpcOptions.put("dir", resource.storagePath());
+        rpcOptions.put("dir", storageRoot + "/resources/" + java.util.UUID.fromString(resource.resourceId()));
+        if (resource.outputFilename() == null || resource.outputFilename().isBlank()
+                || resource.outputFilename().matches(".*[\\\\/].*")
+                || resource.outputFilename().equals(".") || resource.outputFilename().equals("..")) {
+            throw new IllegalArgumentException("HTTP resource requires a safe output filename");
+        }
+        rpcOptions.put("out", resource.outputFilename());
+        rpcOptions.put("continue", "true");
+        rpcOptions.put("auto-file-renaming", "false");
+        rpcOptions.put("allow-overwrite", "false");
+        rpcOptions.put("file-allocation", "none");
+        rpcOptions.put("split", "4");
+        rpcOptions.put("max-connection-per-server", "4");
+        rpcOptions.put("min-split-size", "1M");
         rpcOptions.put("gid", gid);
-        rpcOptions.put("pause", "false");
+        rpcOptions.put("pause", "true");
 
         String returnedGid = client.addUri(List.of(resource.metadataUri()), rpcOptions);
         log.info("[aria2] addUri 成功 resourceId={} gid={}", resource.resourceId(), returnedGid);
-        return new EngineSession(resource.resourceId(), EngineKind.ARIA2, SessionState.ACTIVE);
+        return new EngineSession(resource.resourceId(), EngineKind.ARIA2, SessionState.IDLE);
     }
 
     @Override
@@ -99,42 +122,34 @@ public class Aria2JsonRpcEngine implements DownloadEngine {
     @Override
     public void pauseSession(String engineSessionId) {
         String gid = toGid(engineSessionId);
-        try {
+        String state = (String) client.tellStatus(gid).get("status");
+        if ("active".equals(state) || "waiting".equals(state)) {
             client.pause(gid);
             log.info("[aria2] pauseSession 成功 session={} gid={}", engineSessionId, gid);
-        } catch (Aria2RpcException e) {
-            log.debug("[aria2] pauseSession 忽略瞬态异常 session={} gid={}: {}", engineSessionId, gid, e.getMessage());
         }
     }
 
     @Override
     public void resumeSession(String engineSessionId) {
         String gid = toGid(engineSessionId);
-        try {
+        String state = (String) client.tellStatus(gid).get("status");
+        if ("paused".equals(state)) {
             client.unpause(gid);
             log.info("[aria2] resumeSession 成功 session={} gid={}", engineSessionId, gid);
-        } catch (Aria2RpcException e) {
-            log.debug("[aria2] resumeSession 忽略瞬态异常 session={} gid={}: {}", engineSessionId, gid, e.getMessage());
         }
     }
 
     @Override
     public EngineSnapshot snapshot(String engineSessionId) {
         String gid = toGid(engineSessionId);
-        try {
-            Map<String, Object> status = client.tellStatus(gid);
-            String statusStr = (String) status.get("status");
-            SessionState state = mapState(statusStr);
-            long completed = parseLong(status.get("completedLength"));
-            long total = parseLong(status.get("totalLength"));
-            long speed = parseLong(status.get("downloadSpeed"));
+        Map<String, Object> status = client.tellStatus(gid);
+        String statusStr = (String) status.get("status");
+        SessionState state = mapState(statusStr);
+        long completed = parseLong(status.get("completedLength"));
+        long speed = parseLong(status.get("downloadSpeed"));
 
-            List<Long> fileVerified = List.of(completed);
-            return new EngineSnapshot(engineSessionId, state, true, completed, speed, 0L, 1, fileVerified);
-        } catch (Aria2RpcException e) {
-            log.warn("[aria2] 获取快照失败 session={} gid={}: {}", engineSessionId, gid, e.getMessage());
-            return EngineSnapshot.empty(engineSessionId);
-        }
+        List<Long> fileVerified = List.of(completed);
+        return new EngineSnapshot(engineSessionId, state, true, completed, speed, 0L, 1, fileVerified);
     }
 
     @Override
@@ -147,16 +162,23 @@ public class Aria2JsonRpcEngine implements DownloadEngine {
     public void removeSession(String engineSessionId, boolean removeUnreferencedData) {
         String gid = toGid(engineSessionId);
         try {
-            client.remove(gid);
-        } catch (Aria2RpcException e) {
-            log.debug("[aria2] remove 忽略异常: {}", e.getMessage());
-        }
-        try {
+            String state = (String) client.tellStatus(gid).get("status");
+            if (!Set.of("complete", "error", "removed").contains(state)) {
+                client.remove(gid);
+                state = (String) client.tellStatus(gid).get("status");
+                if (!"removed".equals(state)) {
+                    throw new IllegalStateException("aria2 removal is not yet confirmed");
+                }
+            }
             client.removeDownloadResult(gid);
         } catch (Aria2RpcException e) {
-            log.debug("[aria2] removeDownloadResult 忽略异常: {}", e.getMessage());
+            if (!isMissing(e)) throw e;
         }
         log.info("[aria2] removeSession 完成 session={} gid={}", engineSessionId, gid);
+    }
+
+    private boolean isMissing(Aria2RpcException e) {
+        return e.getCode() == 1 && e.getMessage().toLowerCase(java.util.Locale.ROOT).contains("not found");
     }
 
     private String toGid(String engineSessionId) {

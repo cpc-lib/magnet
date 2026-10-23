@@ -1,4 +1,4 @@
-# Java 多用户 Magnet / BitTorrent 下载管理平台 (P0–P4)
+# Java 多用户 Magnet / BitTorrent 下载管理平台
 
 基于 Java 21 + Spring Boot 3 控制面与 C++ libtorrent-rasterbar 2.0.8 gRPC Sidecar 的多用户 BitTorrent (V1/V2/Hybrid) 下载管理平台。
 
@@ -14,7 +14,7 @@ magnet/
 │   ├── download-application/       # 解析、任务编排、文件导出与引用计数 GC 应用服务
 │   ├── download-infrastructure/   # MyBatis、Flyway (V1-V4)、Redis 配额与下载物理存储
 │   ├── download-engine-libtorrent/ # C++ Worker gRPC/Protobuf 适配器与 Mock
-│   ├── download-engine-aria2/      # aria2 多协议引擎占位（P6 范围）
+│   ├── download-engine-aria2/      # aria2 HTTP/HTTPS JSON-RPC 引擎
 │   ├── download-scheduler/         # 定时调度（任务分发、超时清扫、GC 清扫）
 │   └── download-api/               # REST 控制器、JWT 安全过滤器与启动入口
 ├── native/
@@ -37,7 +37,7 @@ magnet/
 | **P3** | 共享 Session (单资源单会话)、活跃需求并集、断点恢复 | ✅ 已交付 | `TaskServiceTest` (27 用例), `ApiIntegrationTest.sharedSessionAcrossTwoUsersAndDemandUnion` |
 | **P4** | Resume 崩溃恢复、坏块重检、安全导出物化 (防穿越/软链接逃逸)、引用计数宽限期 GC | ✅ 已交付 | `ExportServiceTest` (6), `FileDownloadStorageTest` (6), `ReferenceGcServiceTest` (4), Worker 容器坏块重检验证 |
 | **P5** | 同宿主机双 Worker 租约、Epoch、磁盘 fencing 与故障接管 | ✅ 同机范围交付；跨主机未实现 | `TaskServiceTest`、`ApiIntegrationTest`、`GrpcLeaseTest`、`native/tests/test_ha.py` |
-| **P6** | aria2 多协议 (HTTP/HTTPS/FTP/Metalink) 下载引擎 | ❌ 未纳入本次交付 | 保持 SPI 占位接口未接入 |
+| **P6** | aria2 HTTP/HTTPS 下载引擎；FTP/Metalink 后续单列 | ✅ HTTP/HTTPS 已通过实机验收 | `Aria2DownloadIntegrationTest` 真实下载、暂停恢复、重启续传与手动导出 |
 | **P7** | Prometheus 监控大盘与全链路吞吐压测调优 | ❌ 未纳入本次交付 | 明确排除于 P0–P4 交付范围 |
 
 ---
@@ -141,6 +141,41 @@ Worker 不可达时该 API 停止续租；备用实例在数据库租约过期�
 重新校验磁盘。冻结进程仍持锁时接管会等待；没有安全的硬性故障恢复时限。
 租约超时或无法确认磁盘任务已排空时 Worker 会退出并由 Compose 重启，
 同一 Worker 的其他会话会短暂中断后重新挂载。导出仍需用户手动点击。
+
+## 六、P6 HTTP/HTTPS 下载（单 API 控制面）
+
+BT 仍使用 libtorrent，HTTP/HTTPS 直链使用 aria2。FTP、Metalink 和 aria2 多控制面物理
+fencing 不属于本轮范围。启用 HTTP 时只运行一个 API 调度实例，不将其纳入双 Worker HA。
+
+在仓库根目录的 PowerShell 中设置同一 RPC 密钥并启动：
+
+```powershell
+$env:MAGNET_ARIA2_RPC_SECRET = '替换为自己的随机密钥'
+docker compose -f infra/docker-compose.yml --profile http up -d --build aria2
+$env:MAGNET_ARIA2_RPC_ENABLED = 'true'
+$env:MAGNET_ARIA2_RPC_ENDPOINT = 'http://localhost:6800/jsonrpc'
+$env:MAGNET_ARIA2_STORAGE_ROOT = '/data'
+$env:STORAGE_ROOT = (Resolve-Path server/download-api/data).Path
+mvn install "-DskipTests"
+mvn -pl server/download-api spring-boot:run
+```
+
+API 启动命令沿用第三节的模块启动方式；上面的变量必须在 API 进程所在窗口中设置。
+容器 `/data` 与宿主机 `server/download-api/data` 必须指向同一物理目录。
+aria2 收到 `/data/resources/<resourceId>`；API 从宿主机 STORAGE_ROOT 读取并安全导出。
+文件名以解析结果为准，不允许 aria2 自动改名。默认禁用 aria2 时 HTTP 任务保持排队，
+不会以 Mock 模拟完成；Mock 仅测试显式启用。
+
+在解析页面提交 HTTP/HTTPS URL，选择文件创建任务；完成后点击“导出文件”，再下载导出副本。
+未知文件大小、空文件或不安全的服务端文件名会被拒绝。本轮不支持需要登录或自定义请求头的直链。
+
+真实验收（Docker 可用时自动构建测试 aria2 镜像，使用临时存储及本地可控源）：
+
+```powershell
+mvn -pl server/download-api -am "-Dtest=Aria2DownloadIntegrationTest" "-Dsurefire.failIfNoSpecifiedTests=false" test
+```
+
+aria2 的 `out`、`continue` 和 RPC 行为依据 [aria2 官方手册](https://aria2.github.io/manual/en/html/aria2c)。
 
 双 Worker 验证使用独立临时 Docker 卷，不访问上述用户数据目录：
 

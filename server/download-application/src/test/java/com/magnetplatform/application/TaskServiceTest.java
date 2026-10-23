@@ -910,6 +910,49 @@ class TaskServiceTest {
     }
 
     @Test
+    void explicitRetryRemovesFailedAria2ResultWithoutDeletingPartialFile() {
+        boolean[] removed = {false};
+        RecordingEngine engine = new RecordingEngine() {
+            public EngineKind kind() { return EngineKind.ARIA2; }
+            public EngineSession createOrAttach(ResourceDescriptor resource, EngineOptions options) {
+                this.resource = resource;
+                return new EngineSession(resource.resourceId(), EngineKind.ARIA2, snapshot.state());
+            }
+            public void removeSession(String id, boolean data) {
+                assertFalse(data, "重试须保留部分下载文件");
+                removed[0] = true;
+                snapshot = EngineSnapshot.empty(id);
+            }
+        };
+        service = serviceWithEngine(engine);
+        resources.update(new TorrentResource(resourceId, "http:retry", (byte[]) null, (byte[]) null,
+                VersionType.HTTP, "demo.bin", null, 150L, false, "HTTP", List.of(), 2,
+                LocalDateTime.now(), "http://example.com/demo.bin"));
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+        engine.snapshot = new EngineSnapshot(resourceId.toString(), SessionState.FAILED, true,
+                0L, 0L, 0L, 0, List.of(0L));
+        service.dispatchTick(1);
+        assertEquals(TaskStatus.FAILED, tasks.findById(task.getId()).orElseThrow().getStatus());
+        service.retry(alice, false, task.getId());
+        service.dispatchTick(1);
+        assertTrue(removed[0]);
+        assertEquals(TaskStatus.DOWNLOADING, tasks.findById(task.getId()).orElseThrow().getStatus());
+    }
+
+    @Test
+    void failedEngineSnapshotCannotCompleteTaskEvenWithFullByteCount() {
+        RecordingEngine engine = new RecordingEngine();
+        service = serviceWithEngine(engine);
+        DownloadTask task = service.create(alice, parseId, List.of(0), null, true, null);
+        service.dispatchTick(1);
+        engine.snapshot = new EngineSnapshot(resourceId.toString(), SessionState.FAILED, true,
+                100L, 0L, 0L, 0, List.of(100L, 0L));
+        service.dispatchTick(1);
+        assertEquals(TaskStatus.FAILED, tasks.findById(task.getId()).orElseThrow().getStatus());
+    }
+
+    @Test
     void httpTaskRoutesToAria2EngineAndCompletesLifecycle() {
         RecordingEngine btEngine = new RecordingEngine();
         RecordingAria2Engine aria2Engine = new RecordingAria2Engine();

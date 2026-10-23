@@ -71,11 +71,17 @@ services:
     restart: unless-stopped
 
   aria2:
-    image: qmcgaw/aria2:latest
+    profiles: [http]
+    build: ./aria2
+    image: magnet-aria2:latest
     container_name: magnet-aria2
+    entrypoint: ["/bin/sh", "-ec"]
     environment:
-      - RPC_SECRET=${MAGNET_ARIA2_RPC_SECRET:-}
-      - RPC_LISTEN_ALL=true
+      MAGNET_ARIA2_RPC_SECRET: ${MAGNET_ARIA2_RPC_SECRET:-}
+    command:
+      - |
+        : "$${MAGNET_ARIA2_RPC_SECRET:?Set MAGNET_ARIA2_RPC_SECRET before starting aria2}"
+        exec aria2c --enable-rpc=true --rpc-listen-all=true --rpc-secret="$${MAGNET_ARIA2_RPC_SECRET}" --dir=/data --continue=true --auto-save-interval=1 --file-allocation=none --enable-dht=false --enable-peer-exchange=false
     ports:
       - "127.0.0.1:6800:6800"
     volumes:

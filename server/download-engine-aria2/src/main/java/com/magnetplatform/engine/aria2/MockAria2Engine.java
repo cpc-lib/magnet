@@ -21,11 +21,11 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * aria2 引擎 Mock 实现。
- * 当 magnet.engine.aria2.rpc.enabled=false（默认）时生效，
+ * 仅当 magnet.engine.aria2.mock.enabled=true 时生效，
  * 用于单元测试与本地无需运行 aria2 守护进程的场景。
  */
 @Component
-@ConditionalOnProperty(name = "magnet.engine.aria2.rpc.enabled", havingValue = "false", matchIfMissing = true)
+@ConditionalOnProperty(name = "magnet.engine.aria2.mock.enabled", havingValue = "true")
 public class MockAria2Engine implements DownloadEngine {
 
     private static final Logger log = LoggerFactory.getLogger(MockAria2Engine.class);

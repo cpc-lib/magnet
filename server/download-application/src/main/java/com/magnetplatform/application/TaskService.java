@@ -35,6 +35,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -63,7 +64,7 @@ public class TaskService {
     private final List<DownloadEngine> engines;
     private final String workerId;
     private final int leaseSeconds;
-    private final Set<UUID> attachedResources = new HashSet<>();
+    private final Map<UUID, SessionState> attachedResources = new HashMap<>();
 
     @Autowired
     public TaskService(DownloadTaskRepository tasks,
@@ -313,10 +314,12 @@ public class TaskService {
                 EngineSession attached = engine.createOrAttach(
                         new ResourceDescriptor(resource.getId().toString(), resource.getBtih(), resource.getBtmh(),
                                 resource.getVersionType().name(), resource.getMetadataPath(), resource.getTrackers(),
-                                torrentBytes, downloadStorage.resourceRoot(resourceId).toString(), resumeBytes),
+                                torrentBytes, downloadStorage.resourceRoot(resourceId).toString(), resumeBytes, resource.getName()),
                         options(session));
-                updateSessionState(session, attached.state().name(), now);
-                attachedResources.add(resourceId);
+                if (attached.state() != SessionState.FAILED) {
+                    updateSessionState(session, attached.state().name(), now);
+                }
+                attachedResources.put(resourceId, attached.state());
             } catch (RuntimeException e) {
                 log.warn("会话恢复失败 resource={}: {}", resourceId, e.getMessage());
             }
@@ -335,7 +338,7 @@ public class TaskService {
         for (EngineSessionRecord session : sessions.findRecoverable()) {
             UUID resourceId = session.getResourceId();
             // P5（§12.2）：仅驱动本实例持有的会话；他人会话由 recoverSessions 的接管路径负责
-            if (!workerId.equals(session.getWorkerId()) || !attachedResources.contains(resourceId)) {
+            if (!workerId.equals(session.getWorkerId()) || !attachedResources.containsKey(resourceId)) {
                 continue;
             }
             String engineType = session.getEngineType();
@@ -369,13 +372,24 @@ public class TaskService {
             }
             engine.setDemand(sessionId, demand);
             EngineSnapshot snap = engine.snapshot(sessionId);
-            updateSessionState(session, snap.state().name(), now);
+            // FAILED 是引擎结果；控制面保留可续租状态以处理任务失败、显式重试和 GC。
+            updateSessionState(session, snap.state() == SessionState.FAILED
+                    ? SessionState.ACTIVE.name() : snap.state().name(), now);
             if (snap.state() == SessionState.RECOVERING) {
                 continue; // 重校验结束前不得用 resume 中的旧计数推进完成状态。
             }
 
             EngineSessionRecord owned = session;
             sessions.withLease(owned, () -> {
+                if (snap.state() == SessionState.FAILED) {
+                    for (DownloadTask task : activesByResource.getOrDefault(resourceId, List.of())) {
+                        DownloadTask failed = update(task.withError(ErrorCodes.DOWNLOAD_FAILED,
+                                "下载引擎报告失败，请重试任务", now));
+                        transition(failed, TaskStatus.FAILED);
+                        events.append(task.getId(), "STATUS", "{\"status\":\"FAILED\",\"errorCode\":\"DOWNLOAD_FAILED\"}");
+                    }
+                    return;
+                }
                 Map<Integer, Long> fileSizes = resources.findFiles(resourceId).stream()
                         .collect(Collectors.toMap(TorrentFileInfo::getFileIndex, TorrentFileInfo::getSizeBytes));
                 List<Long> fileVerified = snap.fileVerifiedBytes();
@@ -500,7 +514,8 @@ public class TaskService {
                         "资源已丢失，无法启动下载"));
         String engineType = resource.getVersionType() == VersionType.HTTP ? EngineKind.ARIA2.name() : EngineKind.LIBTORRENT.name();
         Optional<EngineSessionRecord> existing = sessions.findByResource(resourceId, engineType);
-        if (attachedResources.contains(resourceId)) {
+        boolean failedAttachment = attachedResources.get(resourceId) == SessionState.FAILED;
+        if (attachedResources.containsKey(resourceId) && !failedAttachment) {
             return;
         }
         DownloadEngine engine = engineFor(resource);
@@ -532,13 +547,17 @@ public class TaskService {
                             "资源会话由其他 Worker 持有且租约有效"));
         }
         try {
+            if (EngineKind.ARIA2.name().equals(engineType) && (failedAttachment || (existing.isPresent()
+                    && SessionState.FAILED.name().equals(existing.get().getState())))) {
+                engine.removeSession(resourceId.toString(), false);
+            }
             EngineSession session = engine.createOrAttach(
                     new ResourceDescriptor(resourceId.toString(), resource.getBtih(), resource.getBtmh(),
                             resource.getVersionType().name(), resource.getMetadataPath(), resource.getTrackers(),
-                            torrentBytes, downloadStorage.resourceRoot(resource.getId()).toString(), resumeBytes),
+                            torrentBytes, downloadStorage.resourceRoot(resource.getId()).toString(), resumeBytes, resource.getName()),
                     options(leased));
             updateSessionState(leased, session.state().name(), LocalDateTime.now());
-            attachedResources.add(resourceId);
+            attachedResources.put(resourceId, session.state());
         } catch (RuntimeException e) {
             throw new DomainException(ErrorCodes.WORKER_UNAVAILABLE, "引擎会话创建失败: " + e.getMessage());
         }

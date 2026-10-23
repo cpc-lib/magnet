@@ -120,10 +120,6 @@ public class Aria2Client {
             throw new Aria2RpcException("aria2 RPC 请求被中断", e);
         }
 
-        if (response.statusCode() != 200) {
-            throw new Aria2RpcException("aria2 RPC 响应非 200 HTTP 状态: " + response.statusCode() + " body=" + response.body(), null);
-        }
-
         JsonNode responseNode;
         try {
             responseNode = objectMapper.readTree(response.body());
@@ -138,6 +134,9 @@ public class Aria2Client {
             throw new Aria2RpcException(code, message);
         }
 
+        if (response.statusCode() != 200) {
+            throw new Aria2RpcException("aria2 RPC 响应非 200 HTTP 状态: " + response.statusCode(), null);
+        }
         return responseNode.get("result");
     }
 }

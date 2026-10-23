@@ -76,6 +76,7 @@ class ApiIntegrationTest {
         registry.add("spring.datasource.password", MYSQL::getPassword);
         registry.add("magnet.storage.root", () -> storageRoot);
         registry.add("magnet.engine.libtorrent.grpc.enabled", () -> "false");
+        registry.add("magnet.engine.aria2.mock.enabled", () -> "true");
         registry.add("magnet.parse.sweep-delay-ms", () -> "600000");
         registry.add("magnet.task.dispatch-delay-ms", () -> "600000");
         registry.add("magnet.gc.sweep-delay-ms", () -> "600000");

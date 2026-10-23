@@ -23,6 +23,7 @@ class Aria2ClientTest {
     private HttpServer server;
     private Aria2Client client;
     private String lastRequestBody;
+    private int responseStatus = 200;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -46,7 +47,7 @@ class Aria2ClientTest {
 
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             byte[] respBytes = responseBody.getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(200, respBytes.length);
+            exchange.sendResponseHeaders(responseStatus, respBytes.length);
             try (OutputStream os = exchange.getResponseBody()) {
                 os.write(respBytes);
             }
@@ -62,6 +63,14 @@ class Aria2ClientTest {
         if (server != null) {
             server.stop(0);
         }
+    }
+
+    @Test
+    void http400PreservesStructuredRpcErrorCode() {
+        responseStatus = 400;
+        assertThatThrownBy(() -> client.tellStatus("errorTest"))
+                .isInstanceOfSatisfying(Aria2RpcException.class, error ->
+                        assertThat(error.getCode()).isEqualTo(1));
     }
 
     @Test

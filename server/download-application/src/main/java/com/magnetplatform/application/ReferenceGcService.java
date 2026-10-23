@@ -114,6 +114,10 @@ public class ReferenceGcService {
                     engine.renewLease(resourceId.toString(), owned.getOwnerEpoch(),
                             owned.getLeaseUntil().toInstant(java.time.ZoneOffset.UTC));
                     engine.removeSession(session.getId().toString(), true);
+                    if (EngineKind.ARIA2.name().equals(engineType)) {
+                        // aria2 只移除下载记录；确认停止后在资源行锁内清理宿主机数据。
+                        storage.deleteTree(storage.resourceRoot(resourceId));
+                    }
                     java.nio.file.Path resume = storage.resumeFile(resourceId);
                     try {
                         java.nio.file.Files.deleteIfExists(resume);

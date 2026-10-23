@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.net.http.HttpClient;
@@ -54,6 +55,9 @@ public class HttpProbeService {
             if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
                 throw new DomainException(ErrorCodes.VALIDATION, "仅支持 HTTP 或 HTTPS 协议");
             }
+            if (uri.getHost() == null || uri.getUserInfo() != null) {
+                throw new DomainException(ErrorCodes.VALIDATION, "无效的 URL 主机或用户信息");
+            }
         } catch (IllegalArgumentException e) {
             throw new DomainException(ErrorCodes.VALIDATION, "无效的 URL 格式");
         }
@@ -68,12 +72,12 @@ public class HttpProbeService {
 
             HttpResponse<Void> headResp = httpClient.send(headReq, HttpResponse.BodyHandlers.discarding());
             int code = headResp.statusCode();
-            if (code >= 200 && code < 300) {
+            if (code >= 200 && code < 300 && contentLength(headResp) > 0) {
                 return extractResult(headResp, uri);
             }
 
             // 若 HEAD 返回 405 Method Not Allowed 或 403，降级为 GET Range 0-0 探测
-            if (code == 405 || code == 403) {
+            if (code == 405 || code == 403 || (code >= 200 && code < 300)) {
                 HttpRequest rangeReq = HttpRequest.newBuilder()
                         .uri(uri)
                         .timeout(PROBE_TIMEOUT)
@@ -81,10 +85,12 @@ public class HttpProbeService {
                         .GET()
                         .build();
 
-                HttpResponse<Void> rangeResp = httpClient.send(rangeReq, HttpResponse.BodyHandlers.discarding());
-                int rangeCode = rangeResp.statusCode();
-                if (rangeCode == 200 || rangeCode == 206) {
-                    return extractResult(rangeResp, uri);
+                HttpResponse<InputStream> rangeResp = httpClient.send(rangeReq, HttpResponse.BodyHandlers.ofInputStream());
+                try (InputStream body = rangeResp.body()) {
+                    int rangeCode = rangeResp.statusCode();
+                    if (rangeCode == 200 || rangeCode == 206) {
+                        return extractResult(rangeResp, uri);
+                    }
                 }
             }
 
@@ -99,16 +105,9 @@ public class HttpProbeService {
     }
 
     private ProbeResult extractResult(HttpResponse<?> response, URI uri) {
-        long length = 0L;
-        Optional<String> contentRange = response.headers().firstValue("Content-Range");
-        if (contentRange.isPresent()) {
-            Matcher m = CONTENT_RANGE_PATTERN.matcher(contentRange.get());
-            if (m.find()) {
-                length = Long.parseLong(m.group(1));
-            }
-        }
+        long length = contentLength(response);
         if (length <= 0) {
-            length = response.headers().firstValueAsLong("Content-Length").orElse(0L);
+            throw new DomainException(ErrorCodes.RESOLVE_FAILED, "HTTP 资源缺少有效的正整数长度");
         }
 
         String filename = null;
@@ -124,8 +123,28 @@ public class HttpProbeService {
         if (filename == null || filename.isBlank()) {
             filename = "download.bin";
         }
+        if (filename.equals(".") || filename.equals("..") || filename.matches(".*[\\\\/:*?\"<>|\\p{Cntrl}].*")) {
+            throw new DomainException(ErrorCodes.RESOLVE_FAILED, "HTTP 资源文件名不安全");
+        }
 
-        return new ProbeResult(filename, Math.max(0L, length));
+        return new ProbeResult(filename, length);
+    }
+
+    private long contentLength(HttpResponse<?> response) {
+        try {
+            Optional<String> contentRange = response.headers().firstValue("Content-Range");
+            if (response.statusCode() == 206) {
+                if (contentRange.isEmpty()) return -1L;
+                Matcher m = CONTENT_RANGE_PATTERN.matcher(contentRange.get());
+                if (m.matches()) {
+                    return Long.parseLong(m.group(1));
+                }
+                return -1L;
+            }
+            return response.headers().firstValueAsLong("Content-Length").orElse(-1L);
+        } catch (NumberFormatException e) {
+            return -1L;
+        }
     }
 
     private String parseFilenameFromDisposition(String disposition) {
@@ -133,7 +152,7 @@ public class HttpProbeService {
         if (mStar.find()) {
             String raw = mStar.group(1).trim();
             try {
-                return URLDecoder.decode(raw, StandardCharsets.UTF_8);
+                return URLDecoder.decode(raw.replace("+", "%2B"), StandardCharsets.UTF_8);
             } catch (Exception e) {
                 return raw;
             }
@@ -152,10 +171,6 @@ public class HttpProbeService {
         }
         int idx = path.lastIndexOf('/');
         String name = (idx >= 0 && idx < path.length() - 1) ? path.substring(idx + 1) : path;
-        try {
-            name = URLDecoder.decode(name, StandardCharsets.UTF_8);
-        } catch (Exception ignored) {
-        }
-        return name.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+        return name.trim();
     }
 }

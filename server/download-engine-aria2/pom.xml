@@ -11,7 +11,7 @@
     </parent>
     <artifactId>download-engine-aria2</artifactId>
     <name>download-engine-aria2</name>
-    <description>aria2 JSON-RPC Client（P6 里程碑占位）</description>
+    <description>aria2 HTTP/HTTPS JSON-RPC Client</description>
     <dependencies>
         <dependency>
             <groupId>com.magnetplatform</groupId>

@@ -19,6 +19,9 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import org.mockito.ArgumentCaptor;
+import static org.mockito.Mockito.never;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
@@ -36,6 +39,80 @@ class Aria2JsonRpcEngineTest {
     }
 
     @Test
+    void failedDownloadIsNotSilentlyRestartedDuringRecovery() {
+        String id = UUID.randomUUID().toString();
+        String gid = id.replace("-", "").substring(0, 16);
+        when(client.tellStatus(gid)).thenReturn(Map.of("status", "error"));
+        when(client.addUri(any(), any())).thenReturn(gid);
+        EngineSession session = engine.createOrAttach(new ResourceDescriptor(id, null, null, "HTTP",
+                "https://example.com/file", List.of(), new byte[0], "D:/host/data/" + id, new byte[0], "file.bin"),
+                new EngineOptions(false, "default", 1L, Instant.now().plusSeconds(60)));
+        verify(client, never()).removeDownloadResult(gid);
+        verify(client, never()).addUri(any(), any());
+        assertThat(session.state()).isEqualTo(SessionState.FAILED);
+    }
+
+    @Test
+    void usesContainerDirectoryAndDeclaredFilenameForResumableDownload() {
+        String id = UUID.randomUUID().toString();
+        String gid = id.replace("-", "").substring(0, 16);
+        when(client.tellStatus(gid)).thenThrow(new Aria2RpcException(1, "not found"));
+        when(client.addUri(any(), any())).thenReturn(gid);
+        engine.createOrAttach(new ResourceDescriptor(id, null, null, "HTTP", "https://example.com/raw",
+                List.of(), new byte[0], "D:/host/data/resources/" + id, new byte[0], "report.zip"),
+                new EngineOptions(false, "default", 1L, Instant.now().plusSeconds(60)));
+        ArgumentCaptor<Map<String, Object>> options = ArgumentCaptor.forClass(Map.class);
+        verify(client).addUri(any(), options.capture());
+        assertThat(options.getValue()).containsEntry("dir", "/data/resources/" + id)
+                .containsEntry("out", "report.zip").containsEntry("continue", "true")
+                .containsEntry("auto-file-renaming", "false").containsEntry("pause", "true");
+    }
+
+    @Test
+    void rpcFailureMustNotCreateOrReportEmptyProgress() {
+        String id = UUID.randomUUID().toString();
+        String gid = id.replace("-", "").substring(0, 16);
+        when(client.tellStatus(gid)).thenThrow(new Aria2RpcException("network unavailable", null));
+        ResourceDescriptor resource = new ResourceDescriptor(id, null, null, "HTTP",
+                "https://example.com/file", List.of(), new byte[0], "D:/host/data/resources/" + id, new byte[0]);
+        assertThatThrownBy(() -> engine.createOrAttach(resource,
+                new EngineOptions(false, "default", 1L, Instant.now().plusSeconds(60))))
+                .isInstanceOf(Aria2RpcException.class);
+        verify(client, never()).addUri(any(), any());
+        assertThatThrownBy(() -> engine.snapshot(id)).isInstanceOf(Aria2RpcException.class);
+    }
+
+    @Test
+    void failedPauseMustPropagate() {
+        String id = UUID.randomUUID().toString();
+        String gid = id.replace("-", "").substring(0, 16);
+        when(client.tellStatus(gid)).thenReturn(Map.of("status", "active"));
+        Mockito.doThrow(new Aria2RpcException("network unavailable", null)).when(client).pause(gid);
+        assertThatThrownBy(() -> engine.pauseSession(id)).isInstanceOf(Aria2RpcException.class);
+    }
+
+    @Test
+    void failedRemovalMustPropagate() {
+        String id = UUID.randomUUID().toString();
+        String gid = id.replace("-", "").substring(0, 16);
+        when(client.tellStatus(gid)).thenReturn(Map.of("status", "active"));
+        Mockito.doThrow(new Aria2RpcException("network unavailable", null)).when(client).remove(gid);
+        assertThatThrownBy(() -> engine.removeSession(id, true)).isInstanceOf(Aria2RpcException.class);
+    }
+
+    @Test
+    void pauseAndResumeAreIdempotentForPausedAndCompletedDownloads() {
+        String id = UUID.randomUUID().toString();
+        String gid = id.replace("-", "").substring(0, 16);
+        when(client.tellStatus(gid)).thenReturn(Map.of("status", "paused"));
+        engine.pauseSession(id);
+        verify(client, never()).pause(gid);
+        when(client.tellStatus(gid)).thenReturn(Map.of("status", "complete"));
+        engine.resumeSession(id);
+        verify(client, never()).unpause(gid);
+    }
+
+    @Test
     void capabilitiesAndKind() {
         assertThat(engine.kind()).isEqualTo(EngineKind.ARIA2);
         EngineCapabilities caps = engine.capabilities();
@@ -50,7 +127,7 @@ class Aria2JsonRpcEngineTest {
         UUID resourceId = UUID.randomUUID();
         String gid = resourceId.toString().replace("-", "").substring(0, 16);
         ResourceDescriptor desc = new ResourceDescriptor(resourceId.toString(), null, null, "HTTP",
-                "https://example.com/file.zip", List.of(), new byte[0], "/data/resources/" + resourceId, new byte[0]);
+                "https://example.com/file.zip", List.of(), new byte[0], "/data/resources/" + resourceId, new byte[0], "file.zip");
         EngineOptions opts = new EngineOptions(false, "default", 1L, Instant.now().plusSeconds(60));
 
         when(client.tellStatus(gid)).thenThrow(new Aria2RpcException(1, "Not found"));
@@ -59,7 +136,7 @@ class Aria2JsonRpcEngineTest {
         EngineSession session = engine.createOrAttach(desc, opts);
         assertThat(session.engineSessionId()).isEqualTo(resourceId.toString());
         assertThat(session.engineKind()).isEqualTo(EngineKind.ARIA2);
-        assertThat(session.state()).isEqualTo(SessionState.ACTIVE);
+        assertThat(session.state()).isEqualTo(SessionState.IDLE);
 
         verify(client).addUri(eq(List.of("https://example.com/file.zip")), any());
     }
@@ -89,6 +166,7 @@ class Aria2JsonRpcEngineTest {
         UUID resourceId = UUID.randomUUID();
         String gid = resourceId.toString().replace("-", "").substring(0, 16);
 
+        when(client.tellStatus(gid)).thenReturn(Map.of("status", "active"), Map.of("status", "paused"));
         engine.pauseSession(resourceId.toString());
         verify(client).pause(gid);
 
@@ -101,6 +179,7 @@ class Aria2JsonRpcEngineTest {
         UUID resourceId = UUID.randomUUID();
         String gid = resourceId.toString().replace("-", "").substring(0, 16);
 
+        when(client.tellStatus(gid)).thenReturn(Map.of("status", "active"), Map.of("status", "removed"));
         engine.removeSession(resourceId.toString(), true);
         verify(client).remove(gid);
         verify(client).removeDownloadResult(gid);

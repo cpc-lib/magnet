@@ -273,6 +273,39 @@ class ReferenceGcServiceTest {
     }
 
     @Test
+    void aria2GcDeletesHostFilesOnlyAfterConfirmedRemoval() {
+        RecordingEngine aria2 = new RecordingEngine() {
+            public EngineKind kind() { return EngineKind.ARIA2; }
+        };
+        sessions.byResource.put(resourceId, new EngineSessionRecord(resourceId, resourceId,
+                "w1", "ARIA2", "IDLE", 1L, LocalDateTime.now().plusSeconds(30), 0L,
+                LocalDateTime.now(), LocalDateTime.now()));
+        service = new ReferenceGcService(tasks, exports, gc, sessions, storage, List.of(aria2), 0L, "w1", 30);
+        service.markCandidates();
+        service.sweep();
+        assertTrue(aria2.removeCalled);
+        assertTrue(storage.treeDeleted, "aria2 不会替 API 删除共享宿主机文件");
+        assertTrue(gc.removed.contains(resourceId));
+    }
+
+    @Test
+    void aria2GcRetainsCandidateAndFilesIfRemovalFails() {
+        RecordingEngine aria2 = new RecordingEngine() {
+            public EngineKind kind() { return EngineKind.ARIA2; }
+            public void removeSession(String id, boolean data) { throw new IllegalStateException("RPC failed"); }
+        };
+        sessions.byResource.put(resourceId, new EngineSessionRecord(resourceId, resourceId,
+                "w1", "ARIA2", "IDLE", 1L, LocalDateTime.now().plusSeconds(30), 0L,
+                LocalDateTime.now(), LocalDateTime.now()));
+        service = new ReferenceGcService(tasks, exports, gc, sessions, storage, List.of(aria2), 0L, "w1", 30);
+        service.markCandidates();
+        service.sweep();
+        assertFalse(storage.treeDeleted);
+        assertTrue(gc.notBefore.containsKey(resourceId));
+        assertTrue(gc.failures.containsKey(resourceId));
+    }
+
+    @Test
     void marksCandidateOnlyWhenNoTasksAndNoExports() {
         tasks.nonDeleted = 1;
         exports.active = 0;

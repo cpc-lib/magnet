@@ -6,14 +6,19 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class HttpProbeServiceTest {
 
@@ -107,6 +112,79 @@ class HttpProbeServiceTest {
     void probeNonHttpSchemeThrowsValidation() {
         DomainException ex = assertThrows(DomainException.class, () -> probeService.probe("ftp://example.com/test.iso"));
         assertEquals(ErrorCodes.VALIDATION, ex.code());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"missing", "0", "-1"})
+    void rejectsUnknownOrNonpositiveLength(String length) {
+        server.createContext("/file", exchange -> {
+            if (!length.equals("missing")) exchange.getResponseHeaders().set("Content-Length", length);
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.start();
+        DomainException ex = assertThrows(DomainException.class,
+                () -> probeService.probe("http://127.0.0.1:" + port + "/file"));
+        assertEquals(ErrorCodes.RESOLVE_FAILED, ex.code());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"../escape", "dir/file", "dir\\file", ".", "..", "UTF-8''..%2Fescape"})
+    void rejectsUnsafeDispositionFilename(String filename) {
+        server.createContext("/file", exchange -> {
+            exchange.getResponseHeaders().set("Content-Length", "10");
+            exchange.getResponseHeaders().set("Content-Disposition", "attachment; "
+                    + (filename.startsWith("UTF-8") ? "filename*=" : "filename=") + filename);
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.start();
+        assertThrows(DomainException.class, () -> probeService.probe("http://127.0.0.1:" + port + "/file"));
+    }
+
+    @Test
+    void missingHeadLengthFallsBackWithoutReadingIgnoredRangeBody() {
+        CountDownLatch releaseBody = new CountDownLatch(1);
+        server.createContext("/file", exchange -> {
+            if (exchange.getRequestMethod().equals("HEAD")) {
+                exchange.sendResponseHeaders(200, -1);
+            } else {
+                assertEquals("bytes=0-0", exchange.getRequestHeaders().getFirst("Range"));
+                exchange.sendResponseHeaders(200, 1000000);
+                exchange.getResponseBody().write(1);
+                exchange.getResponseBody().flush();
+                try { releaseBody.await(4, TimeUnit.SECONDS); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }
+            exchange.close();
+        });
+        server.start();
+        try {
+            assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+                var result = probeService.probe("http://127.0.0.1:" + port + "/file");
+                assertEquals(1000000, result.contentLength());
+            });
+        } finally { releaseBody.countDown(); }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"a+b.zip", "a%2520b.zip"})
+    void uriFilenameDecodedOncePreservingPlus(String path) {
+        server.createContext("/", exchange -> {
+            exchange.getResponseHeaders().set("Content-Length", "10");
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.start();
+        assertEquals(path.equals("a+b.zip") ? "a+b.zip" : "a%20b.zip",
+                probeService.probe("http://127.0.0.1:" + port + "/" + path).filename());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"http:///file", "http://user:password@localhost/file"})
+    void invalidAuthorityThrowsValidation(String url) {
+        assertEquals(ErrorCodes.VALIDATION,
+                assertThrows(DomainException.class, () -> probeService.probe(url)).code());
     }
 
     @Test
