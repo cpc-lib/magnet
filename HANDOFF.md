@@ -3,6 +3,7 @@
 > 最后更新：2026-10-23。P0–P4 已交付；P5 同宿主机双 Worker 故障接管已实现。
 > 跨主机 fencing、宿主机/数据库/存储 HA、HTTP 入口负载均衡不在本次范围。
 > 实现提交：`99c1586`。
+> SSE 中文断连补修：`7802b02`。
 
 ## 当前状态与入口
 
@@ -27,7 +28,7 @@
 
 ## 本轮验证记录
 
-后端 `mvn test`：9 个 Maven 模块全部 SUCCESS，113 项测试，0 失败、0 错误、0 跳过。
+后端 `mvn test`：9 个 Maven 模块全部 SUCCESS，120 项测试，0 失败、0 错误、0 跳过。
 真实 MySQL Testcontainers API 集成测试已运行，未以缺少 Docker 为由跳过。
 
 | 模块 | 用例 |
@@ -35,10 +36,18 @@
 | download-domain | 38 |
 | download-application | 57（Auth 5 / Parse 15 / Task 27 / Export 6 / GC 4） |
 | download-infrastructure | 8 |
-| download-api | 10（API 集成 4 / SSE 断连 3 / gRPC 租约协议 3） |
+| download-api | 17（API 集成 4 / SSE 异常处理 9 / TCP 断连 1 / gRPC 租约协议 3） |
 
 前端：`cd web; npm run build`，TypeScript 检查和 Vite 生产构建成功。
 现有大 bundle 提示不影响构建；本轮未做 P7 性能重构。
+
+2026-10-23 SSE 补充回归：先添加 6 个失败用例复现中文原生 IOException 漏判、
+已提交响应被追加错误体和预设 SSE 类型导致业务错误无法写入 JSON，再修复至全部通过。
+`GlobalExceptionHandlerTest` 验证断连、正常 IO 错误、提交前后业务/参数错误；
+`SseDisconnectIntegrationTest.tcpResetStopsSenderWithoutSecondaryConversionError` 使用真实 Tomcat
+和 TCP RST，确认发送线程退出且没有 ExceptionHandler/转换二次错误。
+完成回调偶发缺失及 Tomcat INFO 日志单独登记 ISSUE，不将本次验证解释为容器生命周期问题已修复。
+另执行两次 `mvn -pl server/download-api -am "-Dtest=SseDisconnectIntegrationTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`，均通过。
 
 原生验证命令（只使用测试创建的临时 Docker 数据卷和锁卷，不挂载用户数据）：
 
@@ -73,7 +82,9 @@ python native/tests/test_ha.py
    RECOVERING 快照不能推进完成；真实重校验发现坏块时允许文件进度下降。
 9. 活跃用户选中文件取并集；并集为空才保存 Resume 并暂停。完成仍需两轮精确快照。
 10. 导出仍为手动 `POST /api/v1/tasks/{id}/exports`；GET 列表与任务完成不会自动导出。
-    SSE 断连不向 text/event-stream 再写普通 JSON 错误体。
+    SSE IOException 按响应类型处理，断连不向 text/event-stream 再写普通 JSON 错误体；
+    已提交响应不追加错误体，未提交的业务错误显式返回 application/json 和对应状态码。
+    SseEmitter.send 抛 IOException 后由容器派发错误，发送线程不再调用 complete 竞争完成。
 
 ## 部署与边界
 
@@ -94,6 +105,10 @@ python native/tests/test_ha.py
 - 元数据 polling 遇到另一实例或重启后的无本地令牌，应保持待解析并重新挂载，不应终止整轮轮询。
 - 异步移除无法确认时退出进程，不能无限续租一个永久 removing 的资源。
 - Docker 29 需 Maven surefire 的 api.version=1.44；当前配置已保留。
+- Spring 的断连识别依赖异常类型及英文消息，Windows 中文原生 IOException 会漏判；
+  SSE 错误处理同时检查响应 Content-Type，不能只匹配异常消息。回归见
+  `GlobalExceptionHandlerTest.localizedIoOnEventStreamDoesNotWriteJson` 和
+  `localizedIoAfterStreamCommitPreservesWrittenEvents`。
 
 ## 后续工作
 
