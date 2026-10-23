@@ -147,7 +147,17 @@ Worker 不可达时该 API 停止续租；备用实例在数据库租约过期�
 BT 仍使用 libtorrent，HTTP/HTTPS 直链使用 aria2。FTP、Metalink 和 aria2 多控制面物理
 fencing 不属于本轮范围。启用 HTTP 时只运行一个 API 调度实例，不将其纳入双 Worker HA。
 
-在仓库根目录的 PowerShell 中设置同一 RPC 密钥并启动：
+在仓库根目录的 PowerShell 中构建并启动：
+
+aria2 属于可选 `http` profile，第三节的默认启动/构建不会包含它。先构建实际运行镜像：
+
+```powershell
+docker compose -f infra/docker-compose.yml --profile http build aria2
+docker run --rm --network none magnet-aria2:latest --version
+```
+
+成功后本地应存在 `magnet-aria2:latest`。集成测试使用的 `magnet-aria2:acceptance`
+是独立测试标签，不能代替运行镜像。然后设置 RPC 密钥并启动 aria2：
 
 ```powershell
 $env:MAGNET_ARIA2_RPC_SECRET = '替换为自己的随机密钥'
@@ -174,6 +184,10 @@ aria2 收到 `/data/resources/<resourceId>`；API 从宿主机 STORAGE_ROOT 读�
 ```powershell
 mvn -pl server/download-api -am "-Dtest=Aria2DownloadIntegrationTest" "-Dsurefire.failIfNoSpecifiedTests=false" test
 ```
+
+如果 VPN/TUN 让自动选择的测试源地址与 Docker 网桥冲突，可在运行测试的窗口设置
+`$env:MAGNET_TEST_SOURCE_HOST = '宿主机可被容器访问的IPv4地址'` 后再执行测试。
+该变量仅影响测试夹具，不修改应用网络、代理或证书校验策略。
 
 aria2 的 `out`、`continue` 和 RPC 行为依据 [aria2 官方手册](https://aria2.github.io/manual/en/html/aria2c)。
 

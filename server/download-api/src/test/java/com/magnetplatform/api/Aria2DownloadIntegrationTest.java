@@ -250,6 +250,8 @@ class Aria2DownloadIntegrationTest {
     }
 
     private static String sourceHost() {
+        String configured = System.getenv("MAGNET_TEST_SOURCE_HOST");
+        if (configured != null && !configured.isBlank()) return configured;
         try (java.net.DatagramSocket socket = new java.net.DatagramSocket()) {
             socket.connect(java.net.InetAddress.getByName("192.0.2.1"), 9);
             return socket.getLocalAddress().getHostAddress();
