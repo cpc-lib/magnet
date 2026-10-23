@@ -1,10 +1,8 @@
 # HANDOFF — Magnet Platform
 
-> 最后更新：2026-10-23。P0–P4 已交付；P5 同宿主机双 Worker 故障接管已实现。
+> 最后更新：2026-10-23。P0–P4 已交付；P5 同宿主机双 Worker 故障接管已实现；P6 多协议（HTTP/HTTPS 直链分段下载与 aria2 JSON-RPC 引擎集成）已交付。
 > 跨主机 fencing、宿主机/数据库/存储 HA、HTTP 入口负载均衡不在本次范围。
-> 实现提交：`99c1586`。
-> SSE 中文断连补修：`7802b02`。
-> 暂停/恢复保留开始时间：`2dcad2b`。
+> 历史提交：`99c1586`（P5 HA）、`7802b02`（SSE 补修）、`2dcad2b`（时间补修）。
 
 ## 当前状态与入口
 
@@ -13,6 +11,8 @@
 - 规格基线：`docs/superpowers/specs/java-multiuser-bittorrent-spec.md`。
 - P5 已确认设计：`docs/superpowers/specs/2026-10-22-p5-same-host-ha-design.md`。
 - P5 实施计划：`docs/superpowers/plans/2026-10-22-p5-same-host-ha.md`。
+- P6 已确认设计：`docs/superpowers/specs/2026-10-23-p6-multi-protocol-aria2-design.md`。
+- P6 实施计划：`docs/superpowers/plans/2026-10-23-p6-multi-protocol-aria2.md`。
 - 历史规格/计划保持原样；最新实现事实以本文件、README 和代码为准。
 
 ## 交付矩阵
@@ -25,19 +25,21 @@
 | P4 安全存储/导出/GC | 路径和软链接检查、原子 Resume、手动导出/重试、引用核查 | `FileDownloadStorageTest`、`ExportServiceTest`、`ReferenceGcServiceTest` |
 | P5 同机双 Worker | UTC 租约、Epoch、物理锁、失联停租、崩溃/冻结安全接管、重校验 | `TaskServiceTest`、`ApiIntegrationTest.expiredLeaseCannotRenewAndTakeoverRejectsOldOwner`、`GrpcLeaseTest`、`python native/tests/test_ha.py` |
 | P5 跨主机 | 未实现，需共享存储 fencing 方案 | 不宣称已交付 |
-| P6/P7 | aria2 和监控/吞吐优化未纳入 | 未开工 |
+| P6 多协议与 aria2 引擎 | HTTP/HTTPS 直链探活解析、分段下载、断点续传、aria2 JSON-RPC 2.0 引擎协议接入、单会话共享与统一 CAS 状态机 | `Aria2ClientTest`、`Aria2JsonRpcEngineTest`、`HttpProbeServiceTest`、`ParseServiceTest`、`TaskServiceTest`、`ApiIntegrationTest.httpUrlParseAndDownloadLifecycleWithAria2Engine` |
+| P7 监控与吞吐优化 | 未纳入本次范围 | 未开工 |
 
 ## 本轮验证记录
 
-后端 `mvn test`：9 个 Maven 模块全部 SUCCESS，121 项测试，0 失败、0 错误、0 跳过。
-真实 MySQL Testcontainers API 集成测试已运行，未以缺少 Docker 为由跳过。
+后端 `mvn test`：9 个 Maven 模块全部 SUCCESS，138 项测试，0 失败、0 错误、0 跳过。
+真实 MySQL Testcontainers API 集成测试已运行（包含 HTTP 直链解析与 aria2 端到端集成生命周期测试），未以缺少 Docker 为由跳过。
 
 | 模块 | 用例 |
 |---|---:|
 | download-domain | 38 |
-| download-application | 58（Auth 5 / Parse 15 / Task 28 / Export 6 / GC 4） |
+| download-application | 67（Auth 5 / Parse 17 / Task 29 / Export 6 / GC 4 / Probe 6） |
 | download-infrastructure | 8 |
-| download-api | 17（API 集成 4 / SSE 异常处理 9 / TCP 断连 1 / gRPC 租约协议 3） |
+| download-engine-aria2 | 9（Aria2Client 4 / Aria2JsonRpcEngine 5） |
+| download-api | 18（API 集成 5 / SSE 异常处理 9 / TCP 断连 1 / gRPC 租约协议 3） |
 
 前端：`cd web; npm run build`，TypeScript 检查和 Vite 生产构建成功。
 现有大 bundle 提示不影响构建；本轮未做 P7 性能重构。
@@ -92,6 +94,10 @@ python native/tests/test_ha.py
     SSE IOException 按响应类型处理，断连不向 text/event-stream 再写普通 JSON 错误体；
     已提交响应不追加错误体，未提交的业务错误显式返回 application/json 和对应状态码。
     SseEmitter.send 抛 IOException 后由容器派发错误，发送线程不再调用 complete 竞争完成。
+11. ADR-002 BT 协议保持 libtorrent 独占，HTTP/HTTPS 直链接入 aria2 引擎（ADR-004）。
+12. URL 资源去重与别名复用：通过 SHA-256 计算 URL 散列（32 字节），复用 `resource_hash_alias` 表以 `hash_type="http"` 存储，无侵入式支持单 URL 全局唯一 `resourceId` 与多租户任务去重共享。
+13. 动态引擎路由：根据资源 `version_type == HTTP` 或会话持久化的 `engine_type`，在 `TaskService` 自动路由至 `ARIA2` 引擎，BitTorrent 路由至 `LIBTORRENT`，`ReferenceGcService` 支持双引擎物理会话释放。
+14. 真实 RPC 与 Mock 适配：提供符合 aria2 JSON-RPC 2.0 规范的 `Aria2JsonRpcEngine`（确定性 16 字符 GID、token 鉴权、pause/unpause/remove）与内存单测 `MockAria2Engine`。
 
 ## 部署与边界
 
@@ -119,6 +125,9 @@ python native/tests/test_ha.py
 - 恢复下载会重新经过 QUEUED → STARTING，不能在这条公共调度路径无条件覆盖 startedAt；
   使用已有值，只有为空才写当前时间。回归 `TaskServiceTest.pauseResumePreservesOriginalStartedAt`
   同时验证首次记录时间和连续两轮暂停/恢复保留时间。
+- Spring `@SpyBean` 歧义：引入 `download-engine-aria2` 后容器存在两个 `DownloadEngine` Bean，必须显式指定 Bean name（如 `@SpyBean(name = "mockLibtorrentEngine")`）。
+- `ParseService` 构造器注入：提供多构造器时必须在包含注入依赖的主构造器上标注 `@Autowired`，避免 Spring 找不到默认无参构造器。
+- aria2 GID 格式：aria2 的 GID 必须为 16 位 16 进制小写字符，需从 `engineSessionId`（UUID）计算确定性 16 字符 hex 映射。
 
 ## 后续工作
 

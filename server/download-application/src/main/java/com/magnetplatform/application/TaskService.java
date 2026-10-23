@@ -12,6 +12,7 @@ import com.magnetplatform.domain.common.ErrorCodes;
 import com.magnetplatform.domain.parse.ParseJob;
 import com.magnetplatform.domain.resource.TorrentFileInfo;
 import com.magnetplatform.domain.resource.TorrentResource;
+import com.magnetplatform.domain.resource.VersionType;
 import com.magnetplatform.domain.task.DownloadTask;
 import com.magnetplatform.domain.task.DownloadTaskFile;
 import com.magnetplatform.domain.task.EngineSessionRecord;
@@ -277,14 +278,14 @@ public class TaskService {
      * acquireLease（epoch 单调 +1）接管后重新挂载；物理互斥由 Worker 侧文件锁仲裁（ADR-006）。 */
     public synchronized void recoverSessions() {
         attachedResources.clear();
-        DownloadEngine engine = libtorrentEngine();
-        if (engine == null || !engine.available()) {
-            return;
-        }
         LocalDateTime now = LocalDateTime.now();
         for (EngineSessionRecord session : sessions.findRecoverable()) {
             UUID resourceId = session.getResourceId();
-            String engineType = EngineKind.LIBTORRENT.name();
+            String engineType = session.getEngineType();
+            DownloadEngine engine = engineFor(engineType);
+            if (engine == null || !engine.available()) {
+                continue;
+            }
             if (workerId.equals(session.getWorkerId()) && sessions.renewLease(resourceId, engineType,
                     workerId, session.getOwnerEpoch(), leaseSeconds)) {
                 session = freshLease(session);
@@ -294,12 +295,18 @@ public class TaskService {
                 session = acquired.get();
             }
             TorrentResource resource = resources.findById(resourceId).orElse(null);
-            if (resource == null || !resource.metadataReady() || resource.getMetadataPath() == null) {
+            if (resource == null) {
                 continue;
             }
-            byte[] torrentBytes = torrentStorage.loadTorrent(resource.getMetadataPath()).orElse(null);
-            if (torrentBytes == null) {
-                continue;
+            byte[] torrentBytes = new byte[0];
+            if (resource.getVersionType() != VersionType.HTTP) {
+                if (!resource.metadataReady() || resource.getMetadataPath() == null) {
+                    continue;
+                }
+                torrentBytes = torrentStorage.loadTorrent(resource.getMetadataPath()).orElse(null);
+                if (torrentBytes == null) {
+                    continue;
+                }
             }
             byte[] resumeBytes = downloadStorage.readResume(resourceId).orElse(new byte[0]);
             try {
@@ -319,10 +326,6 @@ public class TaskService {
     /** 需求并集下发 + 按文件精确对账进度 + 完成判定 + 共享会话生命周期（规格 §4.3/§5.1/§5.3/§7）。
      * 以会话为驱动单元：即使某资源无活跃任务，也需在无需求时暂停会话并落盘 resume。 */
     public void pushDemandAndRefreshProgress() {
-        DownloadEngine engine = libtorrentEngine();
-        if (engine == null) {
-            return;
-        }
         LocalDateTime now = LocalDateTime.now();
         // 活跃任务：含 DOWNLOADING/VERIFYING 用于刷进度，也包含 REPAIRING 以便重新入队后对账
         Map<UUID, List<DownloadTask>> activesByResource = tasks.findByStatuses(
@@ -335,8 +338,13 @@ public class TaskService {
             if (!workerId.equals(session.getWorkerId()) || !attachedResources.contains(resourceId)) {
                 continue;
             }
+            String engineType = session.getEngineType();
+            DownloadEngine engine = engineFor(engineType);
+            if (engine == null || !engine.available()) {
+                continue;
+            }
             // 需求下发前续租：CAS 失败即所有权丢失，必须停写（fail-closed）
-            if (!sessions.renewLease(resourceId, EngineKind.LIBTORRENT.name(), workerId,
+            if (!sessions.renewLease(resourceId, engineType, workerId,
                     session.getOwnerEpoch(), leaseSeconds)) {
                 log.warn("需求下发前续租失败，本实例停写 resource={}", resourceId);
                 continue;
@@ -487,25 +495,30 @@ public class TaskService {
      * 占位行幂等插入 → MySQL NOW CAS 获取/接管租约（epoch 单调 +1）→ 携带 epoch 挂载。
      * 他人持有有效租约时抛 WORKER_UNAVAILABLE（瞬态，任务保持 QUEUED 重试）。 */
     private void ensureEngineSession(UUID resourceId) {
-        String engineType = EngineKind.LIBTORRENT.name();
+        TorrentResource resource = resources.findById(resourceId)
+                .orElseThrow(() -> new DomainException(ErrorCodes.INPUT_LOST,
+                        "资源已丢失，无法启动下载"));
+        String engineType = resource.getVersionType() == VersionType.HTTP ? EngineKind.ARIA2.name() : EngineKind.LIBTORRENT.name();
         Optional<EngineSessionRecord> existing = sessions.findByResource(resourceId, engineType);
         if (attachedResources.contains(resourceId)) {
             return;
         }
-        DownloadEngine engine = libtorrentEngine();
+        DownloadEngine engine = engineFor(resource);
         if (engine == null || !engine.available()) {
             throw new DomainException(ErrorCodes.WORKER_UNAVAILABLE, "下载引擎未接入");
         }
-        TorrentResource resource = resources.findById(resourceId)
-                .orElseThrow(() -> new DomainException(ErrorCodes.INPUT_LOST,
-                        "资源已丢失，无法启动下载"));
-        if (!resource.metadataReady() || resource.getMetadataPath() == null) {
-            throw new DomainException(ErrorCodes.INPUT_LOST,
-                    "资源的 torrent 元数据已丢失，请重新解析或上传");
+        byte[] torrentBytes;
+        if (resource.getVersionType() == VersionType.HTTP) {
+            torrentBytes = new byte[0];
+        } else {
+            if (!resource.metadataReady() || resource.getMetadataPath() == null) {
+                throw new DomainException(ErrorCodes.INPUT_LOST,
+                        "资源的 torrent 元数据已丢失，请重新解析或上传");
+            }
+            torrentBytes = torrentStorage.loadTorrent(resource.getMetadataPath())
+                    .orElseThrow(() -> new DomainException(ErrorCodes.INPUT_LOST,
+                            "资源的 torrent 元数据已丢失，请重新解析或上传"));
         }
-        byte[] torrentBytes = torrentStorage.loadTorrent(resource.getMetadataPath())
-                .orElseThrow(() -> new DomainException(ErrorCodes.INPUT_LOST,
-                        "资源的 torrent 元数据已丢失，请重新解析或上传"));
         byte[] resumeBytes = downloadStorage.readResume(resourceId).orElse(new byte[0]);
         sessions.insertIfAbsent(new EngineSessionRecord(resourceId, resourceId, workerId, engineType,
                 SessionState.DISCOVERING.name(), 0L, null, 0L, LocalDateTime.now(), LocalDateTime.now()));
@@ -550,8 +563,27 @@ public class TaskService {
         }
     }
 
+    private DownloadEngine engineFor(EngineKind kind) {
+        return engines.stream().filter(e -> e.kind() == kind).findFirst().orElse(null);
+    }
+
+    private DownloadEngine engineFor(String engineTypeName) {
+        try {
+            return engineFor(EngineKind.valueOf(engineTypeName));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private DownloadEngine engineFor(TorrentResource resource) {
+        if (resource != null && resource.getVersionType() == VersionType.HTTP) {
+            return engineFor(EngineKind.ARIA2);
+        }
+        return engineFor(EngineKind.LIBTORRENT);
+    }
+
     private DownloadEngine libtorrentEngine() {
-        return engines.stream().filter(e -> e.kind() == EngineKind.LIBTORRENT).findFirst().orElse(null);
+        return engineFor(EngineKind.LIBTORRENT);
     }
 
     /** 同一资源所有活跃任务选中文件下标并集（规格 §7 setDemand） */

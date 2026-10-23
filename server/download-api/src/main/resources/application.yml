@@ -59,3 +59,10 @@ magnet:
         enabled: ${MAGNET_GRPC_ENABLED:true}
         endpoint: ${MAGNET_GRPC_ENDPOINT:localhost:50051}
         insecure: ${MAGNET_GRPC_INSECURE:true}
+    aria2:
+      rpc:
+        # true 启用 aria2 JSON-RPC Client；默认 false 走 Mock
+        enabled: ${MAGNET_ARIA2_RPC_ENABLED:false}
+        endpoint: ${MAGNET_ARIA2_RPC_ENDPOINT:http://localhost:6800/jsonrpc}
+        secret: ${MAGNET_ARIA2_RPC_SECRET:}
+        timeout-seconds: ${MAGNET_ARIA2_RPC_TIMEOUT:10}

@@ -1,6 +1,8 @@
 package com.magnetplatform.api;
 
 import com.magnetplatform.application.ExportService;
+import com.magnetplatform.application.HttpProbeService;
+import com.magnetplatform.engine.aria2.MockAria2Engine;
 import com.magnetplatform.application.TaskService;
 import com.magnetplatform.application.port.DownloadStorage;
 import com.magnetplatform.application.port.DownloadTaskRepository;
@@ -82,8 +84,14 @@ class ApiIntegrationTest {
     @MockBean
     RateLimiter rateLimiter;
 
-    @SpyBean
+    @SpyBean(name = "mockLibtorrentEngine")
     DownloadEngine downloadEngine;
+
+    @Autowired
+    MockAria2Engine mockAria2Engine;
+
+    @SpyBean
+    HttpProbeService httpProbeService;
 
     @Autowired
     TestRestTemplate rest;
@@ -398,6 +406,50 @@ class ApiIntegrationTest {
         assertThat(taskBView.getBody().get("status")).isEqualTo("DOWNLOADING");
         Mockito.verify(downloadEngine, Mockito.atLeastOnce())
                 .setDemand(resourceId.toString(), java.util.Set.of(1));
+    }
+
+    @Test
+    void httpUrlParseAndDownloadLifecycleWithAria2Engine() {
+        Mockito.doReturn(new HttpProbeService.ProbeResult("archive.iso", 1048576L))
+                .when(httpProbeService).probe(Mockito.anyString());
+
+        String token = (String) post("/api/v1/auth/register",
+                Map.of("username", "httpuser", "password", "password123"), null).getBody().get("token");
+
+        // 1. 提交 HTTP 直链解析
+        ResponseEntity<Map> parseResp = post("/api/v1/parses",
+                Map.of("uri", "https://example.com/archive.iso"), token);
+        assertThat(parseResp.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(parseResp.getBody().get("status")).isEqualTo("READY");
+        assertThat(parseResp.getBody().get("inputType")).isEqualTo("HTTP");
+        String parseId = (String) parseResp.getBody().get("id");
+        String resourceId = (String) parseResp.getBody().get("resourceId");
+
+        // 2. 创建下载任务
+        ResponseEntity<Map> taskResp = post("/api/v1/tasks",
+                Map.of("parseId", parseId, "fileIndices", List.of(0)), token);
+        assertThat(taskResp.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String taskId = (String) taskResp.getBody().get("id");
+
+        // 3. 调度启动
+        taskService.dispatchTick(3);
+
+        // 验证引擎会话为 ARIA2
+        assertThat(sessionRepository.findByResource(UUID.fromString(resourceId), EngineKind.ARIA2.name())).isPresent();
+
+        ResponseEntity<Map> taskView = get("/api/v1/tasks/" + taskId, token);
+        assertThat(taskView.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(taskView.getBody().get("status")).isEqualTo("DOWNLOADING");
+
+        // 4. Mock 完成下载并推进两轮对账
+        mockAria2Engine.setSessionProgress(resourceId, 1048576L, 1048576L);
+        taskService.dispatchTick(3); // Tick 1: DOWNLOADING -> VERIFYING
+        taskService.dispatchTick(3); // Tick 2: VERIFYING -> COMPLETED
+
+        ResponseEntity<Map> completedView = get("/api/v1/tasks/" + taskId, token);
+        assertThat(completedView.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(completedView.getBody().get("status")).isEqualTo("COMPLETED");
+        assertThat(((Number) completedView.getBody().get("verifiedBytes")).longValue()).isEqualTo(1048576L);
     }
 
     private void completeAndMaterialize(UUID taskId) {

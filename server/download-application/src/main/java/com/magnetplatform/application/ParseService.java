@@ -54,6 +54,7 @@ public class ParseService {
     private final TorrentStorage storage;
     private final List<DownloadEngine> engines;
     private final ParseProperties properties;
+    private final HttpProbeService httpProbeService;
     private final MagnetParser magnetParser = new MagnetParser();
     private final TorrentMetaParser torrentParser = new TorrentMetaParser();
 
@@ -63,12 +64,92 @@ public class ParseService {
                         TorrentStorage storage,
                         List<DownloadEngine> engines,
                         ParseProperties properties) {
+        this(parseJobs, resources, rateLimiter, storage, engines, properties, new HttpProbeService());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ParseService(ParseJobRepository parseJobs,
+                        TorrentResourceRepository resources,
+                        RateLimiter rateLimiter,
+                        TorrentStorage storage,
+                        List<DownloadEngine> engines,
+                        ParseProperties properties,
+                        HttpProbeService httpProbeService) {
         this.parseJobs = parseJobs;
         this.resources = resources;
         this.rateLimiter = rateLimiter;
         this.storage = storage;
         this.engines = engines;
         this.properties = properties;
+        this.httpProbeService = httpProbeService != null ? httpProbeService : new HttpProbeService();
+    }
+
+    @Transactional
+    public ParseJob submitUri(UUID userId, String uri) {
+        if (uri == null || uri.isBlank()) {
+            throw new DomainException(ErrorCodes.VALIDATION, "链接不能为空");
+        }
+        String trimmed = uri.trim();
+        if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+            return submitHttp(userId, trimmed);
+        }
+        if (trimmed.startsWith("magnet:?")) {
+            return submitMagnet(userId, trimmed);
+        }
+        throw new DomainException(ErrorCodes.VALIDATION, "仅支持 Magnet 链接或 HTTP/HTTPS 直链");
+    }
+
+    @Transactional
+    public ParseJob submitHttp(UUID userId, String uri) {
+        consumeQuota(userId);
+        if (uri == null || uri.isBlank()) {
+            throw new DomainException(ErrorCodes.VALIDATION, "URL 不能为空");
+        }
+        String normalizedUri = uri.trim();
+        HttpProbeService.ProbeResult probe = httpProbeService.probe(normalizedUri);
+        byte[] uriBytes = normalizedUri.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] uriHash = Digests.sha256(uriBytes);
+        String canonicalKey = "http:" + Hex.encode(uriHash);
+        TorrentResource resource = resources.findByHash("http", uriHash)
+                .orElseGet(() -> createHttpResource(canonicalKey, normalizedUri, uriHash, probe));
+
+        ParseJob job = newJob(userId, resource.getId(), InputType.HTTP,
+                uriHash, normalizedUri, null,
+                resource.getName(), ParseStatus.READY);
+        parseJobs.insert(job);
+        log.info("[parse] submitHttp userId={} resourceId={} jobId={} name={} size={}",
+                userId, resource.getId(), job.getId(), resource.getName(), resource.getTotalBytes());
+        return job;
+    }
+
+    private TorrentResource createHttpResource(String canonicalKey, String uri, byte[] uriHash, HttpProbeService.ProbeResult probe) {
+        UUID resourceId = UUID.randomUUID();
+        TorrentResource resource = new TorrentResource(
+                resourceId,
+                canonicalKey,
+                (byte[]) null,
+                (byte[]) null,
+                VersionType.HTTP,
+                probe.filename(),
+                null,
+                probe.contentLength(),
+                false,
+                "HTTP",
+                List.of(),
+                1,
+                LocalDateTime.now(),
+                uri
+        );
+        resources.insert(resource);
+        resources.insertAlias(resourceId, "http", uriHash);
+        TorrentFileInfo file = new TorrentFileInfo(
+                0,
+                probe.filename(),
+                probe.contentLength(),
+                null
+        );
+        resources.insertFiles(resourceId, List.of(file));
+        return resource;
     }
 
     @Transactional
@@ -119,6 +200,15 @@ public class ParseService {
                     .orElseGet(() -> createSkeletonResource(magnet));
             parseJobs.markStatus(job.getId(), ParseStatus.RESOLVING, null, null);
             dispatchResolve(resource);
+        } else if (job.getInputType() == InputType.HTTP) {
+            String uri = job.getInputUri();
+            HttpProbeService.ProbeResult probe = httpProbeService.probe(uri);
+            byte[] uriBytes = uri.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] uriHash = Digests.sha256(uriBytes);
+            String canonicalKey = "http:" + Hex.encode(uriHash);
+            resources.findById(job.getResourceId())
+                    .orElseGet(() -> createHttpResource(canonicalKey, uri, uriHash, probe));
+            parseJobs.markStatus(job.getId(), ParseStatus.READY, null, null);
         } else {
             byte[] bytes = storage.loadTorrent(job.getInputPath())
                     .orElseThrow(() -> new DomainException(ErrorCodes.INPUT_LOST,

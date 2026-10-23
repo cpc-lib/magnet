@@ -86,24 +86,30 @@ public class ReferenceGcService {
             }
             try {
                 EngineSessionRecord session = sessions.findByResource(resourceId, EngineKind.LIBTORRENT.name())
+                        .or(() -> sessions.findByResource(resourceId, EngineKind.ARIA2.name()))
                         .orElse(null);
-                DownloadEngine reachable = libtorrentEngine();
+                if (session == null) {
+                    gc.removeCandidate(resourceId);
+                    continue;
+                }
+                String engineType = session.getEngineType();
+                DownloadEngine reachable = engineFor(engineType);
                 if (reachable == null || !reachable.available()) {
                     throw new IllegalStateException("Worker unavailable for GC");
                 }
-                if (session == null || !workerId.equals(session.getWorkerId())
-                        || !sessions.renewLease(resourceId, EngineKind.LIBTORRENT.name(), workerId,
+                if (!workerId.equals(session.getWorkerId())
+                        || !sessions.renewLease(resourceId, engineType, workerId,
                                 session.getOwnerEpoch(), leaseSeconds)) {
                     throw new IllegalStateException("GC requires a live owned resource lease");
                 }
-                EngineSessionRecord owned = sessions.findByResource(resourceId, EngineKind.LIBTORRENT.name()).orElseThrow();
+                EngineSessionRecord owned = sessions.findByResource(resourceId, engineType).orElseThrow();
                 sessions.withLease(session, () -> {
                     if (tasks.countNonDeletedByResource(resourceId) > 0
                             || exports.countActiveByResource(resourceId) > 0) {
                         gc.removeCandidate(resourceId);
                         return;
                     }
-                    DownloadEngine engine = libtorrentEngine();
+                    DownloadEngine engine = engineFor(owned.getEngineType());
                     if (engine == null) throw new IllegalStateException("Worker unavailable for GC");
                     engine.renewLease(resourceId.toString(), owned.getOwnerEpoch(),
                             owned.getLeaseUntil().toInstant(java.time.ZoneOffset.UTC));
@@ -127,7 +133,16 @@ public class ReferenceGcService {
         }
     }
 
+    private DownloadEngine engineFor(String engineTypeName) {
+        try {
+            EngineKind kind = EngineKind.valueOf(engineTypeName);
+            return engines.stream().filter(e -> e.kind() == kind).findFirst().orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private DownloadEngine libtorrentEngine() {
-        return engines.stream().filter(e -> e.kind() == EngineKind.LIBTORRENT).findFirst().orElse(null);
+        return engineFor(EngineKind.LIBTORRENT.name());
     }
 }

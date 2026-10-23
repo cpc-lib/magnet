@@ -8,6 +8,7 @@ import com.magnetplatform.domain.common.Digests;
 import com.magnetplatform.domain.common.DomainException;
 import com.magnetplatform.domain.common.ErrorCodes;
 import com.magnetplatform.domain.common.Hex;
+import com.magnetplatform.domain.parse.InputType;
 import com.magnetplatform.domain.parse.ParseJob;
 import com.magnetplatform.domain.parse.ParseStatus;
 import com.magnetplatform.domain.resource.TorrentFileInfo;
@@ -447,6 +448,49 @@ class ParseServiceTest {
             return out.toByteArray();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
+        }
+    }
+
+    @Test
+    void submitHttp_createsHttpResourceAndReadyJob() {
+        StubProbeService probe = new StubProbeService();
+        service = new ParseService(jobs, resources, new FakeRateLimiter(), storage,
+                List.of(engine), new ParseProperties(90, 50, null), probe);
+
+        ParseJob job = service.submitUri(alice, "https://example.com/archive.zip");
+        assertEquals(ParseStatus.READY, job.getStatus());
+        assertEquals(InputType.HTTP, job.getInputType());
+
+        TorrentResource resource = resources.findById(job.getResourceId()).orElseThrow();
+        assertEquals(VersionType.HTTP, resource.getVersionType());
+        assertEquals("sample.iso", resource.getName());
+        assertEquals(10485760L, resource.getTotalBytes());
+        assertEquals(1, resource.getFileCount());
+
+        List<TorrentFileInfo> files = resources.findFiles(resource.getId());
+        assertEquals(1, files.size());
+        assertEquals("sample.iso", files.get(0).getRelativePath());
+        assertEquals(10485760L, files.get(0).getSizeBytes());
+    }
+
+    @Test
+    void submitHttp_reusesExistingResourceAcrossUsers() {
+        StubProbeService probe = new StubProbeService();
+        service = new ParseService(jobs, resources, new FakeRateLimiter(), storage,
+                List.of(engine), new ParseProperties(90, 50, null), probe);
+
+        ParseJob first = service.submitUri(alice, "https://example.com/archive.zip");
+        ParseJob second = service.submitUri(bob, "https://example.com/archive.zip");
+        assertEquals(first.getResourceId(), second.getResourceId());
+    }
+
+    static class StubProbeService extends HttpProbeService {
+        String filename = "sample.iso";
+        long length = 10485760L;
+
+        @Override
+        public ProbeResult probe(String uri) {
+            return new ProbeResult(filename, length);
         }
     }
 

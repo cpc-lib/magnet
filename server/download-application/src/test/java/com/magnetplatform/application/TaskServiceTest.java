@@ -909,6 +909,67 @@ class TaskServiceTest {
         assertEquals(ErrorCodes.WORKER_UNAVAILABLE, queued.getErrorCode());
     }
 
+    @Test
+    void httpTaskRoutesToAria2EngineAndCompletesLifecycle() {
+        RecordingEngine btEngine = new RecordingEngine();
+        RecordingAria2Engine aria2Engine = new RecordingAria2Engine();
+        service = new TaskService(tasks, events, sessions, parseJobs, resources,
+                torrentStorage, downloadStorage, List.of(btEngine, aria2Engine), "local-worker-1", 30);
+
+        UUID httpResId = UUID.randomUUID();
+        LocalDateTime now = LocalDateTime.now();
+        TorrentResource httpResource = new TorrentResource(httpResId, "http:test-hash", (byte[]) null, (byte[]) null,
+                VersionType.HTTP, "archive.iso", null, 1000L, false, "HTTP",
+                List.of(), 1, now, "https://example.com/archive.iso");
+        resources.byId.put(httpResId, httpResource);
+        resources.files.put(httpResId, List.of(new TorrentFileInfo(0, "archive.iso", 1000L, null)));
+
+        UUID httpParseId = UUID.randomUUID();
+        parseJobs.byId.put(httpParseId, new ParseJob(httpParseId, alice, httpResId,
+                InputType.HTTP, null, "https://example.com/archive.iso", null, "archive.iso",
+                ParseStatus.READY, null, null, 0, now, now));
+
+        DownloadTask task = service.create(alice, httpParseId, List.of(0), null, true, null);
+        assertEquals(TaskStatus.QUEUED, task.getStatus());
+
+        // dispatchTick: 驱动挂载
+        service.dispatchTick(1);
+
+        // 断言：严格路由到 ARIA2 引擎，BT 引擎从未被调用
+        assertEquals(1, aria2Engine.createCalls, "HTTP 任务必须路由至 ARIA2 引擎挂载");
+        assertEquals(0, btEngine.createCalls, "BT 引擎不得参与 HTTP 任务处理");
+        EngineSessionRecord session = sessions.findByResource(httpResId, EngineKind.ARIA2.name()).orElseThrow();
+        assertEquals("ARIA2", session.getEngineType());
+        assertEquals(TaskStatus.DOWNLOADING, tasks.findById(task.getId()).orElseThrow().getStatus());
+
+        // 推进进度至 100%
+        aria2Engine.snapshot = new EngineSnapshot(httpResId.toString(), SessionState.ACTIVE, true,
+                1000L, 100L, 0L, 1, List.of(1000L));
+
+        // 第 1 tick: DOWNLOADING -> VERIFYING
+        service.dispatchTick(1);
+        assertEquals(TaskStatus.VERIFYING, tasks.findById(task.getId()).orElseThrow().getStatus());
+
+        // 第 2 tick: VERIFYING -> COMPLETED
+        service.dispatchTick(1);
+        DownloadTask completed = tasks.findById(task.getId()).orElseThrow();
+        assertEquals(TaskStatus.COMPLETED, completed.getStatus());
+        assertNotNull(completed.getCompletedAt());
+        assertEquals(1000L, completed.getVerifiedBytes());
+    }
+
+    static class RecordingAria2Engine extends RecordingEngine {
+        @Override
+        public EngineKind kind() {
+            return EngineKind.ARIA2;
+        }
+
+        @Override
+        public EngineCapabilities capabilities() {
+            return new EngineCapabilities(false, false, false, true, false, true);
+        }
+    }
+
     private static void assertCode(String code, Executable executable) {
         DomainException e = assertThrows(DomainException.class, executable);
         assertEquals(code, e.code(), e::getMessage);

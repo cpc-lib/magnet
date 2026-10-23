@@ -14,7 +14,7 @@ export type ParseStatus = 'PENDING' | 'RESOLVING' | 'READY' | 'FAILED' | 'TIMEOU
 export interface ParseJobView {
   id: string;
   resourceId: string;
-  inputType: 'MAGNET' | 'TORRENT';
+  inputType: 'MAGNET' | 'TORRENT' | 'HTTP';
   displayHint: string | null;
   status: ParseStatus;
   errorCode: string | null;
@@ -40,7 +40,7 @@ export interface FileView {
 export interface ResourceView {
   id: string;
   name: string | null;
-  versionType: 'V1' | 'V2' | 'HYBRID';
+  versionType: 'V1' | 'V2' | 'HYBRID' | 'HTTP';
   btih: string | null;
   btmh: string | null;
   pieceLength: number | null;

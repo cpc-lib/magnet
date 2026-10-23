@@ -27,6 +27,10 @@
         </dependency>
         <dependency>
             <groupId>com.magnetplatform</groupId>
+            <artifactId>download-engine-aria2</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.magnetplatform</groupId>
             <artifactId>download-scheduler</artifactId>
         </dependency>
         <dependency>

@@ -1,0 +1,108 @@
+package com.magnetplatform.engine.aria2;
+
+import com.magnetplatform.engine.aria2.client.Aria2Client;
+import com.magnetplatform.engine.aria2.client.Aria2RpcException;
+import com.magnetplatform.spi.EngineCapabilities;
+import com.magnetplatform.spi.EngineKind;
+import com.magnetplatform.spi.EngineOptions;
+import com.magnetplatform.spi.EngineSession;
+import com.magnetplatform.spi.EngineSnapshot;
+import com.magnetplatform.spi.ResourceDescriptor;
+import com.magnetplatform.spi.SessionState;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+class Aria2JsonRpcEngineTest {
+
+    private Aria2Client client;
+    private Aria2JsonRpcEngine engine;
+
+    @BeforeEach
+    void setUp() {
+        client = Mockito.mock(Aria2Client.class);
+        engine = new Aria2JsonRpcEngine(client);
+    }
+
+    @Test
+    void capabilitiesAndKind() {
+        assertThat(engine.kind()).isEqualTo(EngineKind.ARIA2);
+        EngineCapabilities caps = engine.capabilities();
+        assertThat(caps.http()).isTrue();
+        assertThat(caps.bittorrentV1()).isFalse();
+        assertThat(caps.bittorrentV2()).isFalse();
+        assertThat(caps.resumable()).isTrue();
+    }
+
+    @Test
+    void createOrAttachCreatesWhenNotExists() {
+        UUID resourceId = UUID.randomUUID();
+        String gid = resourceId.toString().replace("-", "").substring(0, 16);
+        ResourceDescriptor desc = new ResourceDescriptor(resourceId.toString(), null, null, "HTTP",
+                "https://example.com/file.zip", List.of(), new byte[0], "/data/resources/" + resourceId, new byte[0]);
+        EngineOptions opts = new EngineOptions(false, "default", 1L, Instant.now().plusSeconds(60));
+
+        when(client.tellStatus(gid)).thenThrow(new Aria2RpcException(1, "Not found"));
+        when(client.addUri(eq(List.of("https://example.com/file.zip")), any())).thenReturn(gid);
+
+        EngineSession session = engine.createOrAttach(desc, opts);
+        assertThat(session.engineSessionId()).isEqualTo(resourceId.toString());
+        assertThat(session.engineKind()).isEqualTo(EngineKind.ARIA2);
+        assertThat(session.state()).isEqualTo(SessionState.ACTIVE);
+
+        verify(client).addUri(eq(List.of("https://example.com/file.zip")), any());
+    }
+
+    @Test
+    void snapshotMapsActiveProgress() {
+        UUID resourceId = UUID.randomUUID();
+        String gid = resourceId.toString().replace("-", "").substring(0, 16);
+
+        when(client.tellStatus(gid)).thenReturn(Map.of(
+                "status", "active",
+                "completedLength", "500",
+                "totalLength", "1000",
+                "downloadSpeed", "50"
+        ));
+
+        EngineSnapshot snap = engine.snapshot(resourceId.toString());
+        assertThat(snap.state()).isEqualTo(SessionState.ACTIVE);
+        assertThat(snap.verifiedBytes()).isEqualTo(500L);
+        assertThat(snap.fileVerifiedBytes()).containsExactly(500L);
+        assertThat(snap.downloadRateBytesPerSec()).isEqualTo(50L);
+        assertThat(snap.metadataReady()).isTrue();
+    }
+
+    @Test
+    void pauseAndResumeDelegates() {
+        UUID resourceId = UUID.randomUUID();
+        String gid = resourceId.toString().replace("-", "").substring(0, 16);
+
+        engine.pauseSession(resourceId.toString());
+        verify(client).pause(gid);
+
+        engine.resumeSession(resourceId.toString());
+        verify(client).unpause(gid);
+    }
+
+    @Test
+    void removeSessionCleansUp() {
+        UUID resourceId = UUID.randomUUID();
+        String gid = resourceId.toString().replace("-", "").substring(0, 16);
+
+        engine.removeSession(resourceId.toString(), true);
+        verify(client).remove(gid);
+        verify(client).removeDownloadResult(gid);
+    }
+}

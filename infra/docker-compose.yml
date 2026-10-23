@@ -70,6 +70,18 @@ services:
       - worker-locks:/locks
     restart: unless-stopped
 
+  aria2:
+    image: qmcgaw/aria2:latest
+    container_name: magnet-aria2
+    environment:
+      - RPC_SECRET=${MAGNET_ARIA2_RPC_SECRET:-}
+      - RPC_LISTEN_ALL=true
+    ports:
+      - "127.0.0.1:6800:6800"
+    volumes:
+      - ../server/download-api/data:/data
+    restart: unless-stopped
+
 volumes:
   mysql-data:
   redis-data:

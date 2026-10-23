@@ -15,6 +15,7 @@ public final class ErrorCodes {
     public static final String INVALID_TORRENT = "INVALID_TORRENT";
     public static final String INVALID_PATH = "INVALID_PATH";
     public static final String METADATA_TIMEOUT = "METADATA_TIMEOUT";
+    public static final String RESOLVE_FAILED = "RESOLVE_FAILED";
     public static final String INPUT_LOST = "INPUT_LOST";
     public static final String EXPORT_IO_ERROR = "EXPORT_IO_ERROR";
 

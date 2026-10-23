@@ -40,7 +40,7 @@ public class ParseController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ParseJobView submitMagnet(Authentication auth, @Valid @RequestBody SubmitMagnetRequest request) {
-        return ParseJobView.from(parseService.submitMagnet(principal(auth).userId(), request.uri()));
+        return ParseJobView.from(parseService.submitUri(principal(auth).userId(), request.uri()));
     }
 
     @PostMapping("/upload")

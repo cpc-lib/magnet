@@ -74,7 +74,7 @@ export default function ParsesPage() {
       <div className="page-header">
         <div>
           <h1 className="page-title">资源解析</h1>
-          <p className="page-subtitle">提交 Magnet 链接或上传 .torrent 文件，校验通过后可按文件创建下载任务</p>
+          <p className="page-subtitle">提交 Magnet 链接、HTTP/HTTPS 直链或上传 .torrent 文件，校验通过后可按文件创建下载任务</p>
         </div>
       </div>
 
@@ -85,7 +85,7 @@ export default function ParsesPage() {
               allowClear
               value={magnetInput}
               onChange={(e) => setMagnetInput(e.target.value)}
-              placeholder="粘贴 magnet:?xt=urn:btih:... 链接"
+              placeholder="粘贴 Magnet 链接或 HTTP/HTTPS 直链"
               enterButton="解析链接"
               loading={submitting}
               style={{ width: 420 }}
