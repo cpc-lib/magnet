@@ -1,173 +1,101 @@
-# HANDOFF — Java 多用户 Magnet / BitTorrent 下载平台
+# HANDOFF — Magnet Platform
 
-> 最后更新：2026-10-22 | 当前阶段：**P0-P4 全部完成并通过全量验证（包含 Docker Worker Smoke 与 Testcontainers API 集成测试）** | 分支：`main`
+> 最后更新：2026-10-23。P0–P4 已交付；P5 同宿主机双 Worker 故障接管已实现。
+> 跨主机 fencing、宿主机/数据库/存储 HA、HTTP 入口负载均衡不在本次范围。
+> 实现提交：`99c1586`。
 
----
+## 当前状态与入口
 
-## 一、项目概览
+- Java 21 / Spring Boot 3 / MyBatis / MySQL 8.4 / Redis / gRPC；C++ libtorrent 2.0.8 Worker。
+- 前端 React 18 / TypeScript / Ant Design；`web/package.json` 提供开发和生产构建命令。
+- 规格基线：`docs/superpowers/specs/java-multiuser-bittorrent-spec.md`。
+- P5 已确认设计：`docs/superpowers/specs/2026-10-22-p5-same-host-ha-design.md`。
+- P5 实施计划：`docs/superpowers/plans/2026-10-22-p5-same-host-ha.md`。
+- 历史规格/计划保持原样；最新实现事实以本文件、README 和代码为准。
 
-| 维度 | 内容 |
-|---|---|
-| **定位** | Java 21 + Spring Boot 3 多用户下载管理平台（BT V1/V2/Hybrid + HTTP(S) 预留） |
-| **控制面** | Java 21 + Spring Boot 3.3 + MyBatis + Flyway (V1-V4) + MySQL 8.4 + Redis 7 + gRPC/Protobuf |
-| **引擎侧** | C++ libtorrent-rasterbar 2.0.8 Sidecar Worker（gRPC）；HTTP(S) 预留 aria2 SPI 占位 |
-| **前端** | React 18 + TypeScript + Vite + Ant Design |
-| **规格基线** | `doc/superpowers/specs/java-multiuser-bittorrent-spec.md` |
-| **交付计划** | `doc/superpowers/plans/2026-10-22-p0-p4-delivery-plan.md` |
-| **运行栈** | JDK 21 / Maven 3.9 / Node 20+ / Docker Desktop (MySQL 8.4 + Redis 7 + libtorrent-worker) |
+## 交付矩阵
 
-**模块地图**：
+| 阶段 | 当前实现 | 可复现验证 |
+|---|---|---|
+| P0 用户与租户 | JWT、密码校验、跨租户 404 | `AuthServiceTest`、`ApiIntegrationTest` |
+| P0–P1 解析与任务 | Magnet/torrent、文件选择、CAS 状态机、暂停/恢复/重试/删除 | `ParseServiceTest`、`TaskServiceTest` |
+| P2–P3 真实引擎与共享会话 | 同资源单会话、文件需求并集、逐文件精确进度、两轮完成判定 | `TaskServiceTest`、`ApiIntegrationTest.sharedSessionAcrossTwoUsersAndDemandUnion` |
+| P4 安全存储/导出/GC | 路径和软链接检查、原子 Resume、手动导出/重试、引用核查 | `FileDownloadStorageTest`、`ExportServiceTest`、`ReferenceGcServiceTest` |
+| P5 同机双 Worker | UTC 租约、Epoch、物理锁、失联停租、崩溃/冻结安全接管、重校验 | `TaskServiceTest`、`ApiIntegrationTest.expiredLeaseCannotRenewAndTakeoverRejectsOldOwner`、`GrpcLeaseTest`、`python native/tests/test_ha.py` |
+| P5 跨主机 | 未实现，需共享存储 fencing 方案 | 不宣称已交付 |
+| P6/P7 | aria2 和监控/吞吐优化未纳入 | 未开工 |
 
-```
-magnet/
-├── server/
-│   ├── download-engine-spi/        # SPI（DownloadEngine, EngineSnapshot, ResourceDescriptor, …）
-│   ├── download-domain/            # 领域模型（DownloadTask, TorrentResource, TaskStatus, FileExport, …）
-│   ├── download-application/       # 应用服务（ParseService, TaskService, ExportService, ReferenceGcService, AuthService）
-│   ├── download-infrastructure/   # MyBatis + Flyway (V1-V4) + Redis + 文件存储实现
-│   ├── download-engine-libtorrent/ # gRPC/Protobuf 适配器 + MockLibtorrentEngine
-│   ├── download-engine-aria2/      # aria2 占位（P6 范围）
-│   ├── download-scheduler/         # 定时调度（TaskDispatcher, ParseTimeoutSweeper, GcSweeper）
-│   └── download-api/               # REST 控制器 + JWT 安全 + application.yml + 集成测试
-├── native/
-│   ├── proto/download_engine.proto # gRPC 契约接口
-│   └── libtorrent-worker/          # C++20 Sidecar 源码（libtorrent 2.0.8）
-├── web/                            # React 18 + Ant Design 前端
-├── infra/docker-compose.yml        # MySQL 8.4 + Redis 7 + libtorrent-worker
-└── README.md                       # 根目录交付文档与快速启动指南
-```
+## 本轮验证记录
 
----
+后端 `mvn test`：9 个 Maven 模块全部 SUCCESS，113 项测试，0 失败、0 错误、0 跳过。
+真实 MySQL Testcontainers API 集成测试已运行，未以缺少 Docker 为由跳过。
 
-## 二、P0–P4 交付矩阵（与规格/计划对齐）
+| 模块 | 用例 |
+|---|---:|
+| download-domain | 38 |
+| download-application | 57（Auth 5 / Parse 15 / Task 27 / Export 6 / GC 4） |
+| download-infrastructure | 8 |
+| download-api | 10（API 集成 4 / SSE 断连 3 / gRPC 租约协议 3） |
 
-| 优先级 | 规格章节 | 计划 Task | 核心交付 | 状态 | 验证手段与结果 |
-|---|---|---|---|---|---|
-| P0 | §4.1 用户与租户 | Task 1 | User / JWT / 密码加密与租户隔离 | ✅ | `AuthServiceTest` 5/5 通过 |
-| P0 | §4.2 资源解析 | Task 2 | Magnet / `.torrent` 解析，DHT 抓取回填 | ✅ | `ParseServiceTest` 14/14 通过 |
-| P0 | §4.3 下载生命周期 | Task 4+5 | 逐文件选择、开始/暂停/恢复/重试/删除、CAS 防并发 | ✅ | `TaskServiceTest` 20/20 通过 |
-| P0 | §7 实时状态与恢复 | Task 4+5 | 重启会话挂载、Resume 原子写入与加载恢复 | ✅ | `TaskServiceTest` recover 用例 + Worker 容器重启验证通过 |
-| P0 | §8 文件完整性校验 | Task 3+4 | libtorrent `file_progress(piece_granularity)` 精确校验 | ✅ | Worker 侧 `main.cpp` + Worker 容器校验值 `[32768]` 验证通过 |
-| P1 | §5.3 多用户复用 | Task 5 | 同资源单会话，活跃需求按文件并集下发，用户暂停删除互不影响 | ✅ | `TaskServiceTest` + `ApiIntegrationTest.sharedSessionAcrossTwoUsersAndDemandUnion` 通过 |
-| P1 | §10.2 引用计数 GC | Task 6 | 宽限期 + 二次引用核查 + 物理资源容错 GC | ✅ | `ReferenceGcServiceTest` 3/3 通过 |
-| P4 | §10.1 数据安全 | Task 1+6 | DownloadStorage 路径穿越防护、软链接防逃逸、Resume 原子替换 | ✅ | `FileDownloadStorageTest` (6), `ExportServiceTest` (3) 通过 |
-| — | **Task 7** | 集成测试 | REST API 层真实 MySQL Testcontainers 跨租户与导出流式读取集成测试 | ✅ | `ApiIntegrationTest` 3/3 用例全通过（无 skip） |
-| — | **Task 8** | Web 详情页 | `TaskDetailPage.tsx`：文件级进度条、READY 导出链接、状态机禁用逻辑、SSE 同步 | ✅ | `web` 生产打包成功（`tsc -b && vite build`，0 警告） |
-| — | **Task 9** | Worker Smoke | 真实 Docker C++ Worker 容器端到端验证（生命周期 + Resume 恢复 + 坏块检测） | ✅ | 全项通过（`file_verified_bytes` 精确匹配） |
-| — | **Task 10** | 交付文档 | 根目录 `README.md`、`native/README.md`、本 `HANDOFF.md` | ✅ | 交付矩阵对齐，P5–P7 明确标注未纳入 |
+前端：`cd web; npm run build`，TypeScript 检查和 Vite 生产构建成功。
+现有大 bundle 提示不影响构建；本轮未做 P7 性能重构。
 
----
-
-## 三、当前构建与自动化测试验证状态
-
-### 1. 后端全模块测试（`mvn test`）
-
-全 9 个模块，**94 个测试用例全部通过，0 失败，0 跳过**：
-
-```
-[INFO] Reactor Summary for magnet 0.1.0-SNAPSHOT:
-[INFO] 
-[INFO] magnet ............................................. SUCCESS
-[INFO] download-engine-spi ................................ SUCCESS
-[INFO] download-domain .................................... SUCCESS [38 tests]
-[INFO] download-application ............................... SUCCESS [45 tests]
-[INFO] download-infrastructure ............................ SUCCESS [ 8 tests]
-[INFO] download-engine-libtorrent ......................... SUCCESS
-[INFO] download-engine-aria2 .............................. SUCCESS
-[INFO] download-scheduler ................................. SUCCESS
-[INFO] download-api ....................................... SUCCESS [ 3 tests]
-[INFO] ------------------------------------------------------------------------
-[INFO] BUILD SUCCESS
-```
-
-模块级测试分布清单（合计 94）：
-
-| 模块 | 测试类 | 用例数 | 状态 |
-|---|---|---|---|
-| `download-domain` | `MagnetParserTest` (10), `TorrentMetaParserTest` (13), `BencodeDecoderTest` (11), `FileExportTest` (2), `RuntimeStorageFieldsTest` (2) | 38 | ✅ 全绿 |
-| `download-application` | `AuthServiceTest` (5), `ParseServiceTest` (14), `TaskServiceTest` (20), `ReferenceGcServiceTest` (3), `ExportServiceTest` (3) | 45 | ✅ 全绿 |
-| `download-infrastructure` | `FileDownloadStorageTest` (6), `MyBatisRuntimeRepositoryTest` (2) | 8 | ✅ 全绿 |
-| `download-api` | `ApiIntegrationTest` (3 个完整端到端场景：租户解析隔离、任务与安全导出物化/流式读取/删除隔离、双租户共享 Session 需求并集) | 3 | ✅ 全绿（Testcontainers MySQL 8.4 真实驱动） |
-
-### 2. 前端构建（`npm run build`）
+原生验证命令（只使用测试创建的临时 Docker 数据卷和锁卷，不挂载用户数据）：
 
 ```powershell
-cd web
-npm run build
+docker build -t magnet-libtorrent-worker:ha-test native
+python native/tests/test_ha.py
 ```
 
-产物输出：`dist/` 生产 bundle，Vite 编译耗时 ~5.9s，TypeScript 类型检查通过无报错。
+测试覆盖同资源互斥、过期命令、旧 Epoch 在重启后仍被拒绝、崩溃接管、冻结旧进程时拒绝接管、
+心跳中断后的看门狗退出、元数据会话权限/回收、删除确认、保留 size/mtime 的坏块重校验，
+以及删除成功但确认丢失后的同代次恢复。最终 9 项全部通过，0 失败；其中坏块恢复测试保留了原文件大小和 mtime，仍识别出受损 piece。
+本轮代码审查提出的高优先级问题均已处理。
 
-### 3. C++ libtorrent Worker 容器端到端 Smoke 验证
+## 关键架构决策
 
-已在真实 Docker Worker 容器上完成全生命周期 + Resume 恢复 + 坏块重检验证。
+1. `engineSessionId == resourceId`；一个 API 调度实例配一个 Worker，实例 ID 不同。
+   两个实例共用数据库和宿主机数据目录；不会向他人仍有效的租约下发命令。
+2. 租约使用 MySQL `UTC_TIMESTAMP(6)`；过期租约不能续租，只能以 Epoch +1 重新获取。
+   STOPPED 会话也必须重新获取代次，避免旧命令用于新会话。
+3. 每条资源命令携带已提交的 lease_until、Epoch 和短命令截止时间；适配器不能将失败伪装成
+   已挂载、空快照或成功删除。Worker 不可达时停止续租，而不是因 API 存活无限占有资源。
+4. Worker 通过 `/locks` 共享 Linux 命名卷上的 `flock` 保证物理独占；Windows `/data` bind mount
+   只存数据。所有共享数据的 Worker 必须共享锁卷，禁止旧无锁 Worker 混跑。
+5. 资源授权过期（含未结束的元数据 TTL）或无法确认异步磁盘任务排空时终止整个 Worker，内核在进程退出后释放锁。
+   正常资源移除等待 libtorrent 确认排空，在物理锁内清理整个资源目录后才释放锁；
+   Java 不在 ACK 后删除资源树。持久 Epoch 不随容器重启丢失。
+6. 只持久化实际成功获取的最高 Epoch，不凭“已删除”预增 Epoch；否则删除确认丢失时
+   DB 旧代次与锁文件新代次可能永久冲突。新 Owner 成功获取锁后才抬高持久代次。
+7. 进度、Resume 与 GC 回写位于资源/会话行锁和有效租约检查内；新任务创建与 GC 复核共用
+   资源行锁，避免另一 API 在 GC 最后一次引用检查后插入任务。
+8. 恢复时清除 Resume 的 have/verified/unfinished 位图和 seed_mode，重新校验实际磁盘。
+   RECOVERING 快照不能推进完成；真实重校验发现坏块时允许文件进度下降。
+9. 活跃用户选中文件取并集；并集为空才保存 Resume 并暂停。完成仍需两轮精确快照。
+10. 导出仍为手动 `POST /api/v1/tasks/{id}/exports`；GET 列表与任务完成不会自动导出。
+    SSE 断连不向 text/event-stream 再写普通 JSON 错误体。
 
-输出记录：
-```
-==> [Step 1] Generating deterministic V1 fixture...
-Generated out\payload.txt (32768 bytes) and out\payload.torrent (118 bytes)
-==> [Step 2] Building magnet-libtorrent-worker:test image...
-==> [Step 3] Generating Python gRPC stubs...
-==> [Step 4] Running RPC lifecycle & piece verification checks...
-[PASS] Health: ok=True worker=local-worker-1 libtorrent=2.0.8
-[PASS] Path boundary check: rejected /etc/escape (storage_path must stay under the Worker download root)
-[PASS] GetSnapshot verified piece_granularity: state=ACTIVE verified=32768 file_verified_bytes=[32768]
-[PASS] SaveResumeData: bytes=1068 version=1
-[PASS] Pause / Resume lifecycle
-==> [Step 5] Restarting Worker container to verify resume recovery and corruption detection...
-[PASS] Recovery with resume_data: file_verified_bytes=[32768]
-[PASS] Corruption detected on piece #1: verified_bytes dropped to [16384] (1 of 2 pieces valid)
-[PASS] RemoveTorrent(remove_unreferenced_data=True) deleted underlying file
-==> ALL WORKER SMOKE & RECOVERY VERIFICATIONS PASSED!
-```
+## 部署与边界
 
----
+- 根 README 第五节有双 Worker Compose 和两个 API PowerShell 窗口的完整启动步骤。
+- Worker 1/2 分别使用 localhost:50051/50052，API 使用不同端口及不同 MAGNET_WORKER_ID。
+- 两个 API 的 DB、JWT_SECRET、绝对 STORAGE_ROOT 必须一致，指向 Docker `/data` 对应的宿主目录。
+- 默认租约 30 秒、调度间隔 2 秒；实际恢复还取决于 RPC、容器重启、锁释放及磁盘重校验。
+- SIGSTOP 的旧进程仍持有锁，备用节点必须等待。这里优先保证不发生双写，不保证固定 RTO。
+- 一个资源超时可触发整台 Worker 进程重启，同 Worker 其他资源会短暂中断；Compose 会重启，API 重挂载。
+- 本轮只构建 ha-test 镜像并运行隔离验证，没有替用户停止或升级正在使用的 Worker，也没有删除用户数据。
 
-## 四、工作区变更清单（待提交）
+## 技术陷阱
 
-所有变更均在工作区中，状态清洁、构建全绿：
+- 只有 DB Epoch 不足以阻止 native 后台线程写盘；必须同时持有物理锁，不能把 pause() 当作排空完成。
+- force_recheck() 不能单独证明旧 Resume 的完成位图已失效；必须清除旧验证状态后重校验。
+- 续租失败后保存 Resume/修改共享状态会污染新 Owner；应停止命令并让旧 Worker 看门狗处理。
+- 同 ID API 重启后的过期租约同样要走 acquireLease，不能永远留在续租失败分支。
+- 元数据 polling 遇到另一实例或重启后的无本地令牌，应保持待解析并重新挂载，不应终止整轮轮询。
+- 异步移除无法确认时退出进程，不能无限续租一个永久 removing 的资源。
+- Docker 29 需 Maven surefire 的 api.version=1.44；当前配置已保留。
 
-### 新增文件
-1. `README.md` — 根目录全景交付文档与本地启动指南
-2. `server/download-application/src/test/java/com/magnetplatform/application/ExportServiceTest.java` — 导出物化、路径防逃逸与越权单测 (3 用例)
-3. `server/download-application/src/main/java/com/magnetplatform/application/ReferenceGcService.java` — 引用计数与 GC 候选生命周期服务
-4. `server/download-application/src/test/java/com/magnetplatform/application/ReferenceGcServiceTest.java` — GC 宽限期与二次核查单测 (3 用例)
-5. `server/download-scheduler/src/main/java/com/magnetplatform/scheduler/GcSweeper.java` — GC 定时调度器
+## 后续工作
 
-### 修改文件（按模块）
-- **根配置与基础设施**：
-  - `pom.xml`：为 `maven-surefire-plugin` 添加 `api.version=1.44` 兼容 Docker Desktop 29.x
-  - `.gitignore`：忽略 `.codex/`
-  - `infra/docker-compose.yml`：为 `libtorrent-worker` 增加 `build: context: ../native` 并注明宿主 `STORAGE_ROOT` 绑定关系
-- **native Worker**：
-  - `native/README.md`：更新目录树与支持的 RPC 表
-- **server/download-api**：
-  - `server/download-api/src/main/resources/application.yml`：增加 GC 宽限期与调度延迟配置
-  - `server/download-api/src/test/java/com/magnetplatform/api/ApiIntegrationTest.java`：切换至 `JdkClientHttpRequestFactory`，新增多租户任务/导出物化流式读取隔离测试与双租户共享 Session 需求并集测试
-- **server/download-application**：
-  - `server/download-application/src/main/java/com/magnetplatform/application/ExportService.java`：增加选中文件校验未完成时的拦截检查
-  - `server/download-application/src/main/java/com/magnetplatform/application/TaskService.java`：路径清洗使用 `PathSanitizer` 统一拦截目录穿越与绝对路径，抛出 `INVALID_PATH` (HTTP 422)
-  - `server/download-application/src/test/java/com/magnetplatform/application/TaskServiceTest.java`：断言对应路径越界错误码为 `INVALID_PATH`
-- **server/download-infrastructure**：
-  - `server/download-infrastructure/src/main/resources/mappers/DownloadTaskMapper.xml`：修复 `<update id="updateFileProgress">` 中未转义的 `<= -> &lt;=`
-- **web 前端**：
-  - `web/src/pages/TaskDetailPage.tsx`：增加逐文件进度条渲染、根据 `allowedActions` 规则精确禁用操作按钮、展示错误信息
-  - `web/src/pages/ParseDetailPage.tsx`：创建任务成功后平滑重定向至任务详情页
-
----
-
-## 五、关键架构与工程决策总结
-
-1. **`engineSessionId == resourceId`**：同一资源在 libtorrent 引擎中全局唯一。Java 控制面在调度轮次中聚合所有活跃用户任务的文件下标并集下发给 Worker。
-2. **按文件精确进度而非比例估算**：Worker 通过 `file_progress(piece_granularity)` 获取真实通过哈希校验的字节数，更新至 `download_task_file.verified_bytes`；任务总进度等于选中文件的精确已校验字节之和。
-3. **完成状态二次确认**：任务在所有选中文件校验完毕后进入 `VERIFYING`，在下一轮调度快照确认无误后方转入 `COMPLETED` 并触发 `ExportService.materializeCompleted` 物化用户专属导出目录。
-4. **物化导出防逃逸**：导出文件只允许通过 `resolveResourceFile` 读取，且要求严格校验源文件大小与目标路径无软链接逃逸；下载接口 `GET /api/v1/tasks/{id}/exports/{exportId}/content` 严格鉴权。
-5. **GC 宽限期与引用核查**：无活跃任务且无未完成导出的资源标记为候选，经过 300s 宽限期后再次核查；确认无新引用产生后，方调用 Worker 清除会话并从磁盘彻底删除。
-6. **Docker Desktop 29.x API 契约兼容**：Docker 29 弃用了老旧的 Docker API 1.24/1.32，通过在 Maven surefire 配置中显式传入 `api.version=1.44`，保证了 Testcontainers 容器化测试在 Windows 宿主机上无缝执行。
-
----
-
-## 六、下一步建议
-
-1. **执行 Git Commit**：将工作区中通过全量测试的改动打包提交一条 Conventional Commit（如 `feat: complete P0-P4 delivery with integration tests, worker smoke and task detail page`）。
-2. **生产容器部署**：在生产环境可通过 `infra/docker-compose.yml` 一键拉起基础设施，设置生产环境变量与强密钥后运行 API 与前端。
+部署时先退出旧无 fencing Worker，再一起启动新协议 API/Worker。执行双机（非同宿主机）部署前
+需单独设计真实共享存储 fencing；不要把本轮进程 HA 当成宿主机或数据库 HA。
