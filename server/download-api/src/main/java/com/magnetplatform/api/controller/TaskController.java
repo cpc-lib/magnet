@@ -163,7 +163,10 @@ public class TaskController {
                     }
                     Thread.sleep(2000);
                 }
-            } catch (DomainException | IOException | IllegalStateException e) {
+            } catch (IOException e) {
+                // send 失败后的错误派发由 Servlet 容器负责，不能再调用 complete 竞争完成流。
+                closed.set(true);
+            } catch (DomainException | IllegalStateException e) {
                 // 客户端切页、关闭浏览器或断开连接属于正常生命周期事件，安全结束无需抛异常
                 closed.set(true);
                 try {

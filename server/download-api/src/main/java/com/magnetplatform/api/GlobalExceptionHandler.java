@@ -3,9 +3,11 @@ package com.magnetplatform.api;
 import com.magnetplatform.api.dto.Dtos.ErrorResponse;
 import com.magnetplatform.domain.common.DomainException;
 import com.magnetplatform.domain.common.ErrorCodes;
+import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -42,9 +44,9 @@ public class GlobalExceptionHandler {
             Map.entry(ErrorCodes.METADATA_TIMEOUT, HttpStatus.GATEWAY_TIMEOUT));
 
     @ExceptionHandler(DomainException.class)
-    ResponseEntity<ErrorResponse> domain(DomainException e) {
+    ResponseEntity<ErrorResponse> domain(DomainException e, HttpServletResponse response) {
         HttpStatus status = CODE_TO_STATUS.getOrDefault(e.code(), HttpStatus.INTERNAL_SERVER_ERROR);
-        return ResponseEntity.status(status).body(new ErrorResponse(e.code(), e.getMessage()));
+        return error(response, status, e.code(), e.getMessage());
     }
 
     @ExceptionHandler({MethodArgumentNotValidException.class,
@@ -52,26 +54,35 @@ public class GlobalExceptionHandler {
             MethodArgumentTypeMismatchException.class,
             HttpMessageNotReadableException.class,
             MultipartException.class})
-    ResponseEntity<ErrorResponse> badRequest(Exception e) {
-        return ResponseEntity.badRequest()
-                .body(new ErrorResponse(ErrorCodes.VALIDATION, "请求参数不合法"));
+    ResponseEntity<ErrorResponse> badRequest(Exception e, HttpServletResponse response) {
+        return error(response, HttpStatus.BAD_REQUEST, ErrorCodes.VALIDATION, "请求参数不合法");
     }
 
     @ExceptionHandler(IOException.class)
-    ResponseEntity<ErrorResponse> io(IOException e) {
+    ResponseEntity<ErrorResponse> io(IOException e, HttpServletResponse response) {
         // 连接已不可写时不要再向 SSE 响应写入 JSON 错误体。
         if (e instanceof AsyncRequestNotUsableException
-                || DisconnectedClientHelper.isClientDisconnectedException(e)) {
+                || DisconnectedClientHelper.isClientDisconnectedException(e)
+                || (response.getContentType() != null && MediaType.TEXT_EVENT_STREAM.isCompatibleWith(
+                        MediaType.parseMediaType(response.getContentType())))) {
             log.debug("客户端连接已断开", e);
             return null;
         }
-        return internal(e);
+        return internal(e, response);
     }
 
     @ExceptionHandler(Exception.class)
-    ResponseEntity<ErrorResponse> internal(Exception e) {
+    ResponseEntity<ErrorResponse> internal(Exception e, HttpServletResponse response) {
         log.error("未处理异常", e);
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new ErrorResponse("INTERNAL", "服务器内部错误"));
+        return error(response, HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL", "服务器内部错误");
+    }
+
+    private ResponseEntity<ErrorResponse> error(HttpServletResponse response, HttpStatus status,
+                                               String code, String message) {
+        if (response.isCommitted()) {
+            return null;
+        }
+        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON)
+                .body(new ErrorResponse(code, message));
     }
 }
