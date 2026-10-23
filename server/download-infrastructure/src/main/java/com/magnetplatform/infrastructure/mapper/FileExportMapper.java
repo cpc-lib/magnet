@@ -19,6 +19,7 @@ public interface FileExportMapper {
     void updateState(@Param("id") UUID id, @Param("state") ExportState state,
                      @Param("bytes") long bytes, @Param("errorCode") String errorCode,
                      @Param("errorMessage") String errorMessage,
+                     @Param("targetPath") String targetPath,
                      @Param("updatedAt") LocalDateTime updatedAt);
 
     void deleteOwnedByTask(@Param("userId") UUID userId, @Param("taskId") UUID taskId);

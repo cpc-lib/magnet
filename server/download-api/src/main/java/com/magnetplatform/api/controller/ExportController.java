@@ -13,6 +13,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -35,6 +36,14 @@ public class ExportController {
     public List<ExportView> list(Authentication auth, @PathVariable UUID taskId) {
         JwtPrincipal caller = TaskController.principal(auth);
         return exportService.listOwned(caller.userId(), caller.admin(), taskId).stream()
+                .map(ExportView::from)
+                .toList();
+    }
+
+    @PostMapping
+    public List<ExportView> export(Authentication auth, @PathVariable UUID taskId) {
+        JwtPrincipal caller = TaskController.principal(auth);
+        return exportService.exportOwned(caller.userId(), caller.admin(), taskId).stream()
                 .map(ExportView::from)
                 .toList();
     }

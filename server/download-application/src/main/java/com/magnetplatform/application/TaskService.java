@@ -58,18 +58,6 @@ public class TaskService {
     private final TorrentStorage torrentStorage;
     private final DownloadStorage downloadStorage;
     private final List<DownloadEngine> engines;
-    private final ExportService exportService;
-
-    public TaskService(DownloadTaskRepository tasks,
-                       TaskEventRepository events,
-                       EngineSessionRepository sessions,
-                       ParseJobRepository parseJobs,
-                       TorrentResourceRepository resources,
-                       TorrentStorage torrentStorage,
-                       DownloadStorage downloadStorage,
-                       List<DownloadEngine> engines) {
-        this(tasks, events, sessions, parseJobs, resources, torrentStorage, downloadStorage, engines, null);
-    }
 
     @Autowired
     public TaskService(DownloadTaskRepository tasks,
@@ -79,8 +67,7 @@ public class TaskService {
                        TorrentResourceRepository resources,
                        TorrentStorage torrentStorage,
                        DownloadStorage downloadStorage,
-                       List<DownloadEngine> engines,
-                       ExportService exportService) {
+                       List<DownloadEngine> engines) {
         this.tasks = tasks;
         this.events = events;
         this.sessions = sessions;
@@ -89,7 +76,6 @@ public class TaskService {
         this.torrentStorage = torrentStorage;
         this.downloadStorage = downloadStorage;
         this.engines = engines;
-        this.exportService = exportService;
     }
 
     // ---------- 用户命令 ----------
@@ -378,9 +364,6 @@ public class TaskService {
                                     .withCompletedAt(now, now);
                             update(completed);
                             events.append(t.getId(), "STATUS", "{\"status\":\"COMPLETED\"}");
-                            if (exportService != null) {
-                                exportService.materializeCompleted(completed);
-                            }
                         }
                     }
                     case REPAIRING -> {

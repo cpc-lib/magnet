@@ -33,7 +33,7 @@ class MyBatisRuntimeRepositoryTest {
         assertEquals(mapper.exports, repository.findByTask(taskId));
         assertEquals(mapper.exports, repository.findOwned(userId, taskId));
         repository.updateState(export.getId(), ExportState.READY, 12L,
-                null, null, LocalDateTime.MAX);
+                null, null, "file.bin", LocalDateTime.MAX);
         assertEquals(export.getId(), mapper.updatedId);
         assertEquals(ExportState.READY, mapper.updatedState);
         repository.deleteOwnedByTask(userId, taskId);
@@ -84,7 +84,7 @@ class MyBatisRuntimeRepositoryTest {
 
         @Override
         public void updateState(UUID id, ExportState state, long bytes, String errorCode,
-                                String errorMessage, LocalDateTime updatedAt) {
+                                String errorMessage, String targetPath, LocalDateTime updatedAt) {
             updatedId = id;
             updatedState = state;
         }

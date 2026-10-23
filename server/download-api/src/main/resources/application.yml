@@ -4,9 +4,12 @@ server:
 spring:
   application:
     name: magnet-platform
-  # 启动时读取工作目录下的 .env（KEY=VALUE 即 properties 格式）；文件不存在也不报错，环境变量优先级更高
+  # 启动时读取工作目录或子模块目录下的 .env（KEY=VALUE 即 properties 格式）；环境变量优先级更高
   config:
-    import: optional:file:./.env[.properties]
+    import:
+      - optional:file:./.env[.properties]
+      - optional:file:./server/download-api/.env[.properties]
+      - optional:file:../.env[.properties]
   # 本项目用无状态 JWT 认证，无需 Spring Boot 自动生成的内存用户（消除 generated security password 警告）
   autoconfigure:
     exclude: org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
@@ -35,9 +38,9 @@ mybatis:
 
 magnet:
   security:
-    jwt-secret: ${JWT_SECRET:dev-only-insecure-secret-change-me-please-32bytes!!}
+    jwt-secret: ${JWT_SECRET:Una5yzsLMNVBYERhWBTSdOuDvuMOduOpOiIaoCmMdVTIpD84i2qVnc78O3Codspo}
   parse:
-    timeout-seconds: ${PARSE_TIMEOUT_SECONDS:90}
+    timeout-seconds: ${PARSE_TIMEOUT_SECONDS:180}
     per-user-daily-limit: ${PARSE_DAILY_LIMIT:50}
     sweep-delay-ms: ${PARSE_SWEEP_DELAY_MS:5000}
   storage:
@@ -49,6 +52,6 @@ magnet:
     libtorrent:
       grpc:
         # true 启用 C++ gRPC Sidecar Client；默认 false 走 Mock
-        enabled: ${MAGNET_GRPC_ENABLED:false}
+        enabled: ${MAGNET_GRPC_ENABLED:true}
         endpoint: ${MAGNET_GRPC_ENDPOINT:localhost:50051}
         insecure: ${MAGNET_GRPC_INSECURE:true}

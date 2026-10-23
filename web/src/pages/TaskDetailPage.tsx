@@ -66,6 +66,7 @@ export default function TaskDetailPage() {
   const [files, setFiles] = useState<TaskFileDetail[]>([]);
   const [exports, setExports] = useState<ExportView[]>([]);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const timer = useRef<ReturnType<typeof setInterval>>();
 
   const loadAll = useCallback(async () => {
@@ -128,6 +129,22 @@ export default function TaskDetailPage() {
       await loadAll();
     } catch (err: any) {
       message.error(err.response?.data?.message ?? '操作失败');
+    }
+  };
+
+  const exportFiles = async () => {
+    if (!id || exporting) return;
+    setExporting(true);
+    try {
+      const { data } = await client.post<ExportView[]>(`/tasks/${id}/exports`);
+      setExports(data);
+      const failed = data.find((e) => e.state === 'FAILED');
+      if (failed) message.error(failed.errorMessage ?? '导出失败，请重试');
+      else message.success('导出完成，可下载到本地');
+    } catch (err: any) {
+      message.error(err.response?.data?.message ?? '导出失败');
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -287,7 +304,7 @@ export default function TaskDetailPage() {
                       percent={pct}
                       size="small"
                       style={{ margin: 0 }}
-                      status={exp?.state === 'FAILED' ? 'exception' : pct >= 100 ? 'success' : 'active'}
+                      status={pct >= 100 ? 'success' : 'active'}
                     />
                   );
                 },
@@ -319,7 +336,8 @@ export default function TaskDetailPage() {
                   const state = exp?.state ?? r.exportState;
                   if (state === 'READY') return <Tag color="success">可下载</Tag>;
                   if (state === 'FAILED') return <Tag color="error">导出失败</Tag>;
-                  return <Tag color="default">准备中</Tag>;
+                  if (state === 'PENDING') return <Tag color="processing">导出中</Tag>;
+                  return <Tag color="default">待导出</Tag>;
                 },
               },
               {
@@ -330,6 +348,18 @@ export default function TaskDetailPage() {
                 render: (_, r) => {
                   const exp = exportByIndex.get(r.fileIndex);
                   if (!exp || exp.state !== 'READY' || !id) {
+                    if (r.selected && task?.status === 'COMPLETED') {
+                      return (
+                        <Space direction="vertical" size={4}>
+                          <Button size="small" type="primary" loading={exporting} onClick={exportFiles}>
+                            {exp?.state === 'FAILED' ? '重试导出' : '导出文件'}
+                          </Button>
+                          {exp?.errorMessage && <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                            {exp.errorMessage}
+                          </Typography.Text>}
+                        </Space>
+                      );
+                    }
                     return (
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         {exp?.errorMessage ?? (r.selected ? '等待完成校验' : '-')}

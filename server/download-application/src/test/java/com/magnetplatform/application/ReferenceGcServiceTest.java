@@ -125,7 +125,7 @@ class ReferenceGcServiceTest {
         }
 
         public void updateState(UUID id, ExportState state, long bytes, String errorCode,
-                                String errorMessage, LocalDateTime updatedAt) {
+                                String errorMessage, String targetPath, LocalDateTime updatedAt) {
         }
 
         public void deleteOwnedByTask(UUID userId, UUID taskId) {

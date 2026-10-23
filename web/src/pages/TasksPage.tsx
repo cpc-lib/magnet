@@ -169,7 +169,7 @@ export default function TasksPage() {
       } else if (ready.length > 1) {
         navigate(PATHS.taskDetail(t.id));
       } else {
-        message.warning(exports[0]?.errorMessage ?? '导出文件正在准备中，可在详情页查看状态');
+        message.info('请在详情页点击导出文件，再下载到本地');
         navigate(PATHS.taskDetail(t.id));
       }
     } catch (err: any) {

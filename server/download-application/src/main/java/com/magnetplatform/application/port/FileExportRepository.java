@@ -16,7 +16,7 @@ public interface FileExportRepository {
     List<FileExport> findOwned(UUID userId, UUID taskId);
 
     void updateState(UUID id, ExportState state, long bytes, String errorCode,
-                     String errorMessage, LocalDateTime updatedAt);
+                     String errorMessage, String targetPath, LocalDateTime updatedAt);
 
     void deleteOwnedByTask(UUID userId, UUID taskId);
 

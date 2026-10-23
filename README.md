@@ -58,6 +58,15 @@ cd ..
 - **Redis 7**：端口 `6379`
 - **libtorrent-worker**：端口 `50051` (gRPC), `6881` (DHT)，数据挂载至 `../server/download-api/data`
 
+Worker 的 `/data` 与宿主机 `<仓库目录>/server/download-api/data` 是同一份存储。
+在宿主机运行 API 时，将 `.env` 的 `STORAGE_ROOT` 设为该宿主机目录的绝对路径
+（本机为 `D:/release/magnet/server/download-api/data`），避免从不同工作目录启动后读取错误位置。
+不要将宿主机 API 的 `STORAGE_ROOT` 设为容器内的 `/data`。
+
+任务完成和查询导出列表不会自动导出。进入任务详情点击“导出文件”后，
+`POST /api/v1/tasks/{taskId}/exports` 创建所选文件的导出副本；失败后可点击“重试导出”，
+成功后点击“下载到本地”。已有可下载副本会保留。
+
 ### 2. 检查 Worker 健康状态
 
 ```powershell

@@ -45,7 +45,7 @@
     <update id="updateState">
         UPDATE file_export
         SET state = #{state}, bytes = #{bytes}, error_code = #{errorCode},
-            error_message = #{errorMessage}, updated_at = #{updatedAt}
+            error_message = #{errorMessage}, target_path = #{targetPath}, updated_at = #{updatedAt}
         WHERE id = #{id}
     </update>
 

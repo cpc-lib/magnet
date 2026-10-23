@@ -36,8 +36,8 @@ public class MyBatisFileExportRepository implements FileExportRepository {
 
     @Override
     public void updateState(UUID id, ExportState state, long bytes, String errorCode,
-                            String errorMessage, LocalDateTime updatedAt) {
-        mapper.updateState(id, state, bytes, errorCode, errorMessage, updatedAt);
+                            String errorMessage, String targetPath, LocalDateTime updatedAt) {
+        mapper.updateState(id, state, bytes, errorCode, errorMessage, targetPath, updatedAt);
     }
 
     @Override

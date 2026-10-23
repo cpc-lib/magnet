@@ -14,7 +14,10 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MultipartException;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.util.DisconnectedClientHelper;
 
+import java.io.IOException;
 import java.util.Map;
 
 /** 领域错误码 → HTTP 状态集中映射（规格 §9.1），响应体 {code,message} */
@@ -52,6 +55,17 @@ public class GlobalExceptionHandler {
     ResponseEntity<ErrorResponse> badRequest(Exception e) {
         return ResponseEntity.badRequest()
                 .body(new ErrorResponse(ErrorCodes.VALIDATION, "请求参数不合法"));
+    }
+
+    @ExceptionHandler(IOException.class)
+    ResponseEntity<ErrorResponse> io(IOException e) {
+        // 连接已不可写时不要再向 SSE 响应写入 JSON 错误体。
+        if (e instanceof AsyncRequestNotUsableException
+                || DisconnectedClientHelper.isClientDisconnectedException(e)) {
+            log.debug("客户端连接已断开", e);
+            return null;
+        }
+        return internal(e);
     }
 
     @ExceptionHandler(Exception.class)

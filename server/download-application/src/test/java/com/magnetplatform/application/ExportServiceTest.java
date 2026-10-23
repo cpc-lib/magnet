@@ -141,11 +141,11 @@ class ExportServiceTest {
         }
 
         public void updateState(UUID id, ExportState state, long bytes, String errorCode,
-                                String errorMessage, LocalDateTime updatedAt) {
+                                String errorMessage, String targetPath, LocalDateTime updatedAt) {
             FileExport e = byId.get(id);
             if (e != null) {
                 byId.put(id, new FileExport(e.getId(), e.getTaskId(), e.getUserId(), e.getResourceId(),
-                        e.getFileIndex(), e.getRelativePath(), e.getTargetPath(), state, bytes,
+                        e.getFileIndex(), e.getRelativePath(), targetPath, state, bytes,
                         errorCode, errorMessage, e.getCreatedAt(), updatedAt));
             }
         }
@@ -256,6 +256,46 @@ class ExportServiceTest {
         Files.createDirectories(resRoot);
         Files.writeString(resRoot.resolve("selected.txt"), "hello", StandardCharsets.UTF_8);
         Files.writeString(resRoot.resolve("unselected.txt"), "0123456789", StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void listingCompletedTaskDoesNotExportFiles() {
+        LocalDateTime now = LocalDateTime.now();
+        DownloadTask completed = new DownloadTask(taskId, alice, resourceId, TaskStatus.COMPLETED,
+                5L, 5L, 0, null, "", null, null, 1L, now, now, now, now, null);
+        tasks.insert(completed, List.of(
+                new DownloadTaskFile(UUID.randomUUID(), taskId, 0, true, 5L, "NONE")));
+        assertTrue(service.listOwned(alice, false, taskId).isEmpty());
+        assertFalse(Files.exists(storage.exportRoot(alice, taskId)));
+    }
+
+    @Test
+    void retryRepairsLegacyFailedTargetPath() {
+        LocalDateTime now = LocalDateTime.now();
+        DownloadTask completed = new DownloadTask(taskId, alice, resourceId, TaskStatus.COMPLETED,
+                5L, 5L, 0, null, "sub", null, null, 1L, now, now, now, now, null);
+        tasks.insert(completed, List.of(
+                new DownloadTaskFile(UUID.randomUUID(), taskId, 0, true, 5L, "NONE")));
+        UUID exportId = UUID.randomUUID();
+        exports.insert(new FileExport(exportId, taskId, alice, resourceId, 0, "selected.txt",
+                storage.exportRoot(alice, taskId).toString(), ExportState.FAILED, 0L,
+                ErrorCodes.EXPORT_IO_ERROR, "source missing", now, now));
+        service.exportOwned(alice, false, taskId);
+        ExportService.OpenedExport opened = service.openOwned(alice, false, taskId, exportId);
+        assertEquals(storage.exportRoot(alice, taskId).resolve("sub/selected.txt"), opened.path());
+    }
+
+    @Test
+    void manualExportRequiresOwnershipAndCompletedTask() {
+        LocalDateTime now = LocalDateTime.now();
+        DownloadTask downloading = new DownloadTask(taskId, alice, resourceId, TaskStatus.DOWNLOADING,
+                5L, 0L, 0, null, "", null, null, 1L, now, now, now, null, null);
+        tasks.insert(downloading, List.of());
+        assertEquals(ErrorCodes.NOT_FOUND, assertThrows(DomainException.class,
+                () -> service.exportOwned(bob, false, taskId)).code());
+        assertEquals(ErrorCodes.CONFLICT, assertThrows(DomainException.class,
+                () -> service.exportOwned(alice, false, taskId)).code());
+        assertTrue(exports.findByTask(taskId).isEmpty());
     }
 
     @Test

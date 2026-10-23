@@ -130,32 +130,59 @@ public class TaskController {
                              @RequestParam(defaultValue = "0") long afterSeq) {
         JwtPrincipal caller = principal(auth);
         SseEmitter emitter = new SseEmitter(0L);
+        java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean(false);
+        emitter.onCompletion(() -> closed.set(true));
+        emitter.onTimeout(() -> closed.set(true));
+        emitter.onError(t -> closed.set(true));
+
         sseExecutor.submit(() -> {
             long cursor = afterSeq;
             try {
-                while (true) {
+                while (!closed.get()) {
                     List<TaskEventView> batch = taskService
                             .eventsAfter(caller.userId(), caller.admin(), id, cursor, 200).stream()
                             .map(TaskEventView::from).toList();
                     for (TaskEventView e : batch) {
+                        if (closed.get()) {
+                            return;
+                        }
                         emitter.send(SseEmitter.event().id(String.valueOf(e.seq()))
                                 .name(e.eventType()).data(e.payloadJson() == null ? "{}" : e.payloadJson()));
                         cursor = e.seq();
+                    }
+                    if (closed.get()) {
+                        return;
                     }
                     TaskView snapshot = TaskView.from(taskService.getTask(caller.userId(), caller.admin(), id));
                     emitter.send(SseEmitter.event().name("SNAPSHOT").data(snapshot));
                     if (snapshot.status().equals("COMPLETED") || snapshot.status().equals("FAILED")
                             || snapshot.status().equals("DELETED")) {
+                        closed.set(true);
                         emitter.complete();
                         return;
                     }
                     Thread.sleep(2000);
                 }
-            } catch (DomainException | IOException e) {
-                emitter.completeWithError(e);
+            } catch (DomainException | IOException | IllegalStateException e) {
+                // 客户端切页、关闭浏览器或断开连接属于正常生命周期事件，安全结束无需抛异常
+                closed.set(true);
+                try {
+                    emitter.complete();
+                } catch (Exception ignored) {
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                emitter.complete();
+                closed.set(true);
+                try {
+                    emitter.complete();
+                } catch (Exception ignored) {
+                }
+            } catch (Exception e) {
+                closed.set(true);
+                try {
+                    emitter.completeWithError(e);
+                } catch (Exception ignored) {
+                }
             }
         });
         return emitter;

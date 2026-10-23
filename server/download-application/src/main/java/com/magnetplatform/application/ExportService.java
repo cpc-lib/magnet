@@ -108,7 +108,8 @@ public class ExportService {
                     throw new DomainException(ErrorCodes.EXPORT_IO_ERROR,
                             "导出文件字节数校验失败: " + info.getRelativePath());
                 }
-                exports.updateState(exportId, ExportState.READY, copiedSize, null, null, LocalDateTime.now());
+                exports.updateState(exportId, ExportState.READY, copiedSize, null, null,
+                        target.toString(), LocalDateTime.now());
             } catch (DomainException e) {
                 recordFailure(existing, exportId, reloaded, tf.getFileIndex(), info.getRelativePath(),
                         exportRoot, e.code(), e.getMessage());
@@ -121,18 +122,20 @@ public class ExportService {
     }
 
     @Transactional
+    public List<FileExport> exportOwned(UUID actorId, boolean admin, UUID taskId) {
+        DownloadTask task = getOwnedTask(actorId, admin, taskId);
+        if (task.getStatus() != TaskStatus.COMPLETED) {
+            throw new DomainException(ErrorCodes.CONFLICT, "下载任务尚未完成校验");
+        }
+        return materializeCompleted(task);
+    }
+
+    @Transactional(readOnly = true)
     public List<FileExport> listOwned(UUID actorId, boolean admin, UUID taskId) {
         DownloadTask task = getOwnedTask(actorId, admin, taskId);
         List<FileExport> current = admin
                 ? exports.findByTask(taskId)
                 : exports.findOwned(task.getUserId(), taskId);
-        if (task.getStatus() == TaskStatus.COMPLETED
-                && current.stream().noneMatch(e -> e.getState() == ExportState.READY)) {
-            materializeCompleted(task);
-            current = admin
-                    ? exports.findByTask(taskId)
-                    : exports.findOwned(task.getUserId(), taskId);
-        }
         return current.stream()
                 .filter(e -> e.getState() != ExportState.DELETED)
                 .toList();
@@ -218,7 +221,8 @@ public class ExportService {
                     errorCode, errorMessage, now, now);
             exports.insert(failed);
         } else {
-            exports.updateState(exportId, ExportState.FAILED, 0L, errorCode, errorMessage, now);
+            exports.updateState(exportId, ExportState.FAILED, 0L, errorCode, errorMessage,
+                    existing.getTargetPath(), now);
         }
     }
 }
