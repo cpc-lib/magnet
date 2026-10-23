@@ -35,7 +35,17 @@
 - **根因**: 待查；当前 Spring 6.1.14 / Tomcat 10.1.31 的断连生命周期行为，不能仅靠 onCompletion 清理发送线程。类似上游报告见 https://github.com/spring-projects/spring-framework/issues/31140 ，尚未确认同一根因。
 - **修复**: 未修复容器回调行为；当前任务发送线程在 IOException/onError/onCompletion 三条路径均停止，不依赖完成回调退出。依赖升级应单独验证。
 
+## ✅ 已修复 | P6 初版缺少真实 aria2 下载与导出验收
+- **发现日期**: 2026-10-23
+- **严重级**: 高
+- **现象**: Mock 生命周期通过但真实首次启动失败；Docker 宿主路径/容器路径混用，输出名可能与导出元数据不同；RPC 失败被忽略或变为空快照，默认 Mock 会模拟进度。
+- **复现**: `Aria2DownloadIntegrationTest` 首次真实运行无法创建下载；`Aria2ClientTest.http400PreservesStructuredRpcErrorCode` 等新增失败回归。
+- **根因**: 仅 Mock 验证遗漏 aria2 HTTP 400 JSON-RPC 错误；未区分 daemon 路径，未指定 out，默认自动改名；未确认停止即记录成功；控制面 FAILED 状态与有效租约 SQL 互斥。
+- **修复**: `e0f754e`：补齐路径/文件名、实际断点、显式 Mock、RPC 错误传播、可续租失败处理/显式重试和确认停止后的宿主机 GC；新 GID 初始暂停，只有活跃需求才恢复。
+- **验证**: 新增回归先失败后通过；`mvn test` 共 170 项通过，0 失败/错误/跳过，包含真实 HTTP/HTTPS 的暂停、暂停/下载中重启 daemon、非零 Range 续传、源文件/手动导出 16 MiB 字节一致及真实 503 后显式重试。`cd web; npm run build` 成功；无 HTTP 密钥时 `docker compose -f infra/docker-compose.yml config --profiles` 成功。只操作隔离测试容器和临时存储。
+
 ## 范围边界
 
-本轮仅实现同宿主机 Worker 进程/容器 HA。跨主机、宿主机/数据库/存储 HA 与 HTTP 入口切换未实现，
+P5 仅实现同宿主机 Worker 进程/容器 HA。跨主机、宿主机/数据库/存储 HA 与 HTTP 入口切换未实现，
 详见 HANDOFF 和 README。冻结旧进程持有锁时接管等待，不能以强行双写换取固定恢复时限。
+P6 本轮按用户确认仅交付 HTTP/HTTPS，aria2 单 API 控制面；FTP/Metalink 及 aria2 物理 fencing 后续单列。

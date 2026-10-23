@@ -25,4 +25,4 @@ RPC 错误传播，暂停恢复状态幂等，断点依赖实际 .aria2 文件�
 - [x] 增加真实 aria2 集成测试，使用隔离目录和 HTTP/HTTPS Range 源，验证暂停恢复、重启续传、文件名和实际字节。
 - [x] API 测试使用真实 aria2 覆盖解析、完成两轮复核、导出前无副本、手动导出字节一致。
 - [x] `mvn test` 170 项通过，无 Docker 跳过；`cd web; npm run build` 成功。
-- [ ] 更新 README/HANDOFF/ISSUE，明确 HTTP/HTTPS 与单控制面边界，复核暂存区后 Conventional Commit。
+- [x] 更新 README/HANDOFF/ISSUE，明确 HTTP/HTTPS 与单控制面边界，复核暂存区后 Conventional Commit（实现 `e0f754e`）。

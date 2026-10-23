@@ -3,6 +3,7 @@
 > 最后更新：2026-10-23。P0–P4 已交付；P5 同宿主机双 Worker 故障接管已实现；P6 多协议（HTTP/HTTPS 直链分段下载与 aria2 JSON-RPC 引擎集成）已交付。
 > 跨主机 fencing、宿主机/数据库/存储 HA、HTTP 入口负载均衡不在本次范围。
 > 历史提交：`99c1586`（P5 HA）、`7802b02`（SSE 补修）、`2dcad2b`（时间补修）。
+> P6 HTTP/HTTPS 实机补齐：`e0f754e`。
 
 ## 当前状态与入口
 
@@ -13,6 +14,9 @@
 - P5 实施计划：`docs/superpowers/plans/2026-10-22-p5-same-host-ha.md`。
 - P6 已确认设计：`docs/superpowers/specs/2026-10-23-p6-multi-protocol-aria2-design.md`。
 - P6 实施计划：`docs/superpowers/plans/2026-10-23-p6-multi-protocol-aria2.md`。
+- P6 本轮用户确认仅 HTTP/HTTPS；实机补充设计/计划：
+  `docs/superpowers/specs/2026-10-23-p6-http-acceptance-design.md`、
+  `docs/superpowers/plans/2026-10-23-p6-http-acceptance.md`。FTP/Metalink 后续单列。
 - 历史规格/计划保持原样；最新实现事实以本文件、README 和代码为准。
 
 ## 交付矩阵
@@ -30,19 +34,29 @@
 
 ## 本轮验证记录
 
-后端 `mvn test`：9 个 Maven 模块全部 SUCCESS，138 项测试，0 失败、0 错误、0 跳过。
-真实 MySQL Testcontainers API 集成测试已运行（包含 HTTP 直链解析与 aria2 端到端集成生命周期测试），未以缺少 Docker 为由跳过。
+后端 `mvn test`：9 个 Maven 模块全部 SUCCESS，170 项测试，0 失败、0 错误、0 跳过。
+真实 MySQL 与 aria2 Docker API 集成测试已运行，未以缺少 Docker 为由跳过。
 
 | 模块 | 用例 |
 |---|---:|
 | download-domain | 38 |
-| download-application | 67（Auth 5 / Parse 17 / Task 29 / Export 6 / GC 4 / Probe 6） |
+| download-application | 85（Auth 5 / Parse 17 / Task 31 / Export 6 / GC 6 / Probe 20） |
 | download-infrastructure | 8 |
-| download-engine-aria2 | 9（Aria2Client 4 / Aria2JsonRpcEngine 5） |
-| download-api | 18（API 集成 5 / SSE 异常处理 9 / TCP 断连 1 / gRPC 租约协议 3） |
+| download-engine-aria2 | 18（Aria2Client 5 / Aria2JsonRpcEngine 11 / 模式配置 2） |
+| download-api | 21（API 集成 5 / 真实 aria2 集成 3 / SSE 异常处理 9 / TCP 断连 1 / gRPC 租约协议 3） |
 
 前端：`cd web; npm run build`，TypeScript 检查和 Vite 生产构建成功。
 现有大 bundle 提示不影响构建；本轮未做 P7 性能重构。
+
+P6 实机证据：`Aria2DownloadIntegrationTest` 三项真实用例全部通过：HTTP 与 HTTPS（严格证书/主机名
+校验、本地临时 CA），以及真实 503 失败后显式重试。每个协议验证 16 MiB 实际字节、暂停进度稳定、
+暂停期间重启 daemon 不产生新的 GET、用户恢复后继续、下载中重启 daemon 后出现非零 Range 续传、
+开始时间保持、两轮完成复核、GET 导出列表不会自动导出、手动 POST 导出后字节完全一致。
+测试自行构建 `infra/aria2/Dockerfile`，使用临时宿主目录、临时源和临时证书，不替用户升级或重启服务。
+命令：`mvn -pl server/download-api -am "-Dtest=Aria2DownloadIntegrationTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`；
+最终全量 `mvn test` 同样包含上述三项（58.39 秒），所有模块成功。
+`docker compose -f infra/docker-compose.yml config --profiles` 在没有 HTTP 密钥时仍成功列出 ha/http。
+本轮审查发现的失败会话租约、可选 profile 插值和暂停后重启自动下载问题均已处理并验证。
 
 2026-10-23 开始时间补修：`TaskServiceTest.pauseResumePreservesOriginalStartedAt`
 修复前复现恢复时覆盖时间，修复后验证首次启动写入时间及连续两轮暂停/恢复保留时间。
@@ -98,6 +112,14 @@ python native/tests/test_ha.py
 12. URL 资源去重与别名复用：通过 SHA-256 计算 URL 散列（32 字节），复用 `resource_hash_alias` 表以 `hash_type="http"` 存储，无侵入式支持单 URL 全局唯一 `resourceId` 与多租户任务去重共享。
 13. 动态引擎路由：根据资源 `version_type == HTTP` 或会话持久化的 `engine_type`，在 `TaskService` 自动路由至 `ARIA2` 引擎，BitTorrent 路由至 `LIBTORRENT`，`ReferenceGcService` 支持双引擎物理会话释放。
 14. 真实 RPC 与 Mock 适配：提供符合 aria2 JSON-RPC 2.0 规范的 `Aria2JsonRpcEngine`（确定性 16 字符 GID、token 鉴权、pause/unpause/remove）与内存单测 `MockAria2Engine`。
+15. HTTP 输出固定为解析文件名；aria2 的 daemon storage-root 默认 `/data`，独立于 API 宿主机
+    STORAGE_ROOT，两者必须映射同一物理目录。禁止自动改名，开启 continue，重启后按实际断点续传。
+16. aria2 默认禁用时不注入 Mock；Mock 仅 `magnet.engine.aria2.mock.enabled=true` 显式测试启用。
+    GID 不存在才 addUri，其他 RPC 异常传播；aria2 HTTP 400 响应仍先解析 JSON-RPC 错误码。
+17. 远端 FAILED 结果使任务 FAILED，但控制面会话保留可续租状态，保证租约回调、显式重试和 GC
+    可以执行。只有重新排队的任务启动才移除 error GID，保留部分文件重建下载；恢复扫描不偷偷重试。
+18. aria2 不负责删除宿主机文件；GC 在现有资源行锁和引用复核内，确认 daemon 停止后调用
+    DownloadStorage 清理对应目录。移除失败保留候选；libtorrent 仍由 Worker 在物理锁内清理。
 
 ## 部署与边界
 
@@ -108,6 +130,9 @@ python native/tests/test_ha.py
 - SIGSTOP 的旧进程仍持有锁，备用节点必须等待。这里优先保证不发生双写，不保证固定 RTO。
 - 一个资源超时可触发整台 Worker 进程重启，同 Worker 其他资源会短暂中断；Compose 会重启，API 重挂载。
 - 本轮只构建 ha-test 镜像并运行隔离验证，没有替用户停止或升级正在使用的 Worker，也没有删除用户数据。
+- P6 aria2 目前仅支持单 API 控制面；不具备 libtorrent Worker 的物理 fencing，不能据此宣称 HTTP HA。
+  参照 README 第六节启用 http Compose profile，RPC 端口仅绑定 localhost，启动时必须设置密钥。
+- HTTP/HTTPS 资源需正的已知大小，不支持空文件/未知大小流、认证直链或自定义请求头；拒绝不安全文件名。
 
 ## 技术陷阱
 
@@ -128,6 +153,9 @@ python native/tests/test_ha.py
 - Spring `@SpyBean` 歧义：引入 `download-engine-aria2` 后容器存在两个 `DownloadEngine` Bean，必须显式指定 Bean name（如 `@SpyBean(name = "mockLibtorrentEngine")`）。
 - `ParseService` 构造器注入：提供多构造器时必须在包含注入依赖的主构造器上标注 `@Autowired`，避免 Spring 找不到默认无参构造器。
 - aria2 GID 格式：aria2 的 GID 必须为 16 位 16 进制小写字符，需从 `engineSessionId`（UUID）计算确定性 16 字符 hex 映射。
+- aria2 GID 缺失通过 HTTP 400 + JSON-RPC code 1 返回，不能在解析错误体前直接丢弃 HTTP 400。
+- MyBatis 有效租约检查排除 FAILED 会话；不能先把控制面会话置 FAILED，再试图在 withLease 内更新任务。
+- Compose `${VAR:?}` 即使 profile 未激活也会提前插值；HTTP 密钥改在 aria2 容器启动时检查，避免破坏 BT 启动。
 
 ## 后续工作
 
