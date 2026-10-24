@@ -47,6 +47,9 @@ mybatis:
 magnet:
   security:
     jwt-secret: ${JWT_SECRET:Una5yzsLMNVBYERhWBTSdOuDvuMOduOpOiIaoCmMdVTIpD84i2qVnc78O3Codspo}
+  http:
+    # 可选 HTTP 代理（host:port），用于被 DNS 污染或直连不通的境外资源；留空表示直连
+    proxy: ${MAGNET_HTTP_PROXY:}
   worker:
     # P5（§12.2）：本实例 Worker 标识与资源级租约时长；多实例部署时每实例 id 必须唯一
     id: ${MAGNET_WORKER_ID:local-worker-1}

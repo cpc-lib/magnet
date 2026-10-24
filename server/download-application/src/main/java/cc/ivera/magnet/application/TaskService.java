@@ -306,16 +306,26 @@ public class TaskService implements AutoCloseable {
                     // 瞬态冲突（他人持有有效租约/引擎未接入）：保持 QUEUED 下轮重试，fail-closed（规格 §12.2）
                     log.info("任务 {} 暂时无法启动: {}", t.getId(), e.getMessage());
                     update(t.withError(e.code(), e.getMessage(), now));
+                    metrics.recordEngineError("UNKNOWN", "WORKER_UNAVAILABLE");
                 } else {
                     DownloadTask withError = update(t.withError(e.code(), e.getMessage(), now));
                     transition(withError, TaskStatus.FAILED);
                     events.append(t.getId(), "STATUS",
                             "{\"status\":\"FAILED\",\"errorCode\":\"" + e.code() + "\"}");
+                    metrics.recordEngineError("UNKNOWN", e.code());
                 }
             }
         }
         // 4. 每个活跃资源：需求并集下发 + 快照刷新进度
         pushDemandAndRefreshProgress();
+        // 5. 刷新活跃 Worker 与租约数
+        long leases = attachedResources.size();
+        long workers = Math.max(1L, sessions.findRecoverable().stream()
+                .map(EngineSessionRecord::getWorkerId)
+                .filter(w -> w != null && !w.isBlank())
+                .distinct()
+                .count());
+        metrics.refreshWorkersAndLeases(workers, leases);
     }
 
     /** 重启恢复 + 租约续期/接管（规格 §12.1/§12.2）。
@@ -399,6 +409,7 @@ public class TaskService implements AutoCloseable {
                     session.getOwnerEpoch(), leaseSeconds)) {
                 log.warn("需求下发前续租失败，本实例停写 resource={}", resourceId);
                 metrics.recordOperation("lease_renew", "failure", "CAS_FAILED");
+                metrics.recordLeaseFailure(engineType);
                 continue;
             }
             session = freshLease(session);
@@ -450,6 +461,7 @@ public class TaskService implements AutoCloseable {
             if (result.error() != null || result.snapshot() == null) {
                 log.warn("会话快照拉取失败或超时 resource={}: {}", plan.resourceId(),
                         result.error() != null ? result.error().getMessage() : "timeout");
+                metrics.recordEngineError(plan.engineType(), "RPC_TIMEOUT");
                 continue;
             }
 
@@ -472,6 +484,7 @@ public class TaskService implements AutoCloseable {
             UUID resourceId = plan.resourceId();
             sessions.withLease(owned, () -> {
                 if (snap.state() == SessionState.FAILED) {
+                    metrics.recordEngineError(plan.engineType(), "DOWNLOAD_FAILED");
                     for (DownloadTask task : activesByResource.getOrDefault(resourceId, List.of())) {
                         DownloadTask failed = update(task.withError(ErrorCodes.DOWNLOAD_FAILED,
                                 "下载引擎报告失败，请重试任务", now));

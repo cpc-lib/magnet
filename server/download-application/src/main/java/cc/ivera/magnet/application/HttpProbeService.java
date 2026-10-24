@@ -4,10 +4,13 @@ import cc.ivera.magnet.domain.common.DomainException;
 import cc.ivera.magnet.domain.common.ErrorCodes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.net.ProxySelector;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.net.http.HttpClient;
@@ -21,6 +24,7 @@ import java.util.regex.Pattern;
 
 /**
  * HTTP/HTTPS 直链资源探活与元数据提取服务（规格 §4.2）。
+ * 支持可选的 HTTP 代理（magnet.http.proxy，格式 host:port），用于直连不通的境外资源。
  */
 @Service
 public class HttpProbeService {
@@ -34,14 +38,33 @@ public class HttpProbeService {
     private final HttpClient httpClient;
 
     public HttpProbeService() {
-        this(HttpClient.newBuilder()
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .connectTimeout(PROBE_TIMEOUT)
-                .build());
+        this("");
     }
 
-    public HttpProbeService(HttpClient httpClient) {
+    public HttpProbeService(@Value("${magnet.http.proxy:}") String proxy) {
+        this.httpClient = buildClient(proxy);
+    }
+
+    HttpProbeService(HttpClient httpClient) {
         this.httpClient = httpClient;
+    }
+
+    private static HttpClient buildClient(String proxy) {
+        HttpClient.Builder b = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .connectTimeout(PROBE_TIMEOUT);
+        if (proxy != null && !proxy.isBlank()) {
+            int idx = proxy.lastIndexOf(':');
+            if (idx > 0) {
+                String host = proxy.substring(0, idx).trim();
+                int port = Integer.parseInt(proxy.substring(idx + 1).trim());
+                b.proxy(ProxySelector.of(new InetSocketAddress(host, port)));
+                log.info("[http-probe] 启用 HTTP 代理 {}:{}", host, port);
+            } else {
+                log.warn("[http-probe] 代理配置格式错误（应为 host:port），忽略: {}", proxy);
+            }
+        }
+        return b.build();
     }
 
     public record ProbeResult(String filename, long contentLength) {

@@ -24,6 +24,8 @@ public final class MonitoringMetrics {
     private final Map<EngineKind, AtomicLong> peers = new EnumMap<>(EngineKind.class);
     private final Map<String, AtomicLong> sessionCounts = new HashMap<>();
     private final AtomicLong sseConnections = new AtomicLong();
+    private final AtomicLong activeWorkers = new AtomicLong(1);
+    private final AtomicLong activeLeases = new AtomicLong(0);
 
     public MonitoringMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -83,6 +85,26 @@ public final class MonitoringMetrics {
                 .increment();
     }
 
+    public void refreshWorkersAndLeases(long workers, long leases) {
+        activeWorkers.set(workers);
+        activeLeases.set(leases);
+    }
+
+    public void recordLeaseFailure(String engine) {
+        Counter.builder("magnet_lease_failures_total")
+                .tag("engine", engine == null ? "UNKNOWN" : engine)
+                .register(registry)
+                .increment();
+    }
+
+    public void recordEngineError(String engine, String errorType) {
+        Counter.builder("magnet_engine_errors_total")
+                .tag("engine", engine == null ? "UNKNOWN" : engine)
+                .tag("error_type", errorType == null ? "UNKNOWN" : errorType)
+                .register(registry)
+                .increment();
+    }
+
     private void registerStableGauges() {
         for (EngineKind engine : EngineKind.values()) {
             AtomicLong downloadRate = new AtomicLong();
@@ -110,6 +132,20 @@ public final class MonitoringMetrics {
         }
         Gauge.builder("magnet_sse_connections", sseConnections, AtomicLong::doubleValue)
                 .register(registry);
+        Gauge.builder("magnet_active_workers", activeWorkers, AtomicLong::doubleValue)
+                .register(registry);
+        Gauge.builder("magnet_leases_active", activeLeases, AtomicLong::doubleValue)
+                .register(registry);
+
+        for (EngineKind engine : EngineKind.values()) {
+            Counter.builder("magnet_lease_failures_total")
+                    .tag("engine", engine.name())
+                    .register(registry);
+            Counter.builder("magnet_engine_errors_total")
+                    .tag("engine", engine.name())
+                    .tag("error_type", "NONE")
+                    .register(registry);
+        }
     }
 
     private void refreshSessionGauges() {

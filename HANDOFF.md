@@ -132,6 +132,7 @@ python native/tests/test_ha.py
 20. 监控安全 Fail-Closed 保证：`MetricsUserDetailsService` 在密码文件缺失或为空时，自动生成不可预测的高强度随机密码锁定端点，确保在任何未配置测试或意外环境下均拒绝未授权访问（返回 401），且不会破坏无需指标的单测/切片测试上下文。
 21. 低基数监控与单会话吞吐计量：全量指标遵循低基数原则，标签仅保留受控枚举（engine、status、result、reason、error_type），禁止任何任务 ID、用户 ID、URL 等高基数维度；下载/上传速率严格基于底层引擎会话聚合（多个任务共享同资源时仅单次采集），禁止将单物理流吞吐倍乘。
 22. 调度器快照并发获取与超时熔断：将 tick 中对底层下载引擎的 RPC（renewLease、setDemand、snapshot）改造为三阶段模型。阶段 1 内存筛选待处理会话；阶段 2 采用虚拟线程并发向引擎发送 RPC 并设置 1000ms 超时熔断（防止单个卡死/慢引擎拖垮整个调度周期）；阶段 3 统一由主线程按 CAS 和租约更新任务进度与状态机，兼顾并发吞吐与严格事务安全。
+23. 监控大盘指标平稳基线原则：错误与失败 Counter（`magnet_lease_failures_total`、`magnet_engine_errors_total`）在应用启动时必须预热空标签注册（避免 rate 无时序导致 Grafana 判定 No data）；同时 Grafana PromQL 增加 `or vector(0)` 及 Panel 级 `noValue: "0"` 双重防护。活跃 Worker 与租约数（`magnet_active_workers`、`magnet_leases_active`）在每次调度 tick 末尾常态化刷新 Gauge。
 
 ## 部署与边界
 
@@ -188,6 +189,7 @@ python native/tests/test_ha.py
 - Spring Boot 3.3.5 Actuator 暴露 Prometheus：需显式声明 `management.prometheus.metrics.export.enabled: true`，仅配置 `management.endpoints.web.exposure.include` 不足以激活 Prometheus 抓取端点映射。
 - Spring Boot Actuator 与特定安全切片测试排斥：引入 `spring-boot-starter-actuator` 后，若切片测试（如 `SseDisconnectIntegrationTest`）排除了 `SecurityAutoConfiguration`，需在 `application.yml` 全局排除 `ManagementWebSecurityAutoConfiguration`，否则容器启动时会因缺失 `HttpSecurity` 候选 Bean 报错；业务端点与 Prometheus 抓取端点通过 `@Order(1)` 和 `@Order(2)` 的自定义 `SecurityFilterChain` 进行严密控制。
 - MyBatis Record 映射与 SQL 聚合类型匹配：SQL `COUNT(*)` 聚合结果为 `java.lang.Long`，Record 构造器参数若仅有原始类型 `long`，MyBatis 在匹配构造函数反射时会抛出 `NoSuchMethodException`，Record 需显式提供接受包装类型 `Long` 的构造方法。
+- Prometheus Counter 与 Grafana rate 空时序陷阱：Prometheus 计数器若无递增且未预热注册标签，Prometheus 不会生成任何时序数据，导致 `rate(...[5m])` 查询返回空向量；Grafana 面对空向量默认直接显示 `No data` 而非 `0`。必须在应用启动预注册合法标签组合，并在 Grafana PromQL 表达式追加 `or vector(0)`，配合 Panel 级 `noValue: "0"` 双重防护。
 
 ## 后续工作
 

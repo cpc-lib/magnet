@@ -261,13 +261,14 @@
           "refId": "B"
         },
         {
-          "expr": "rate(magnet_lease_failures_total[5m])",
+          "expr": "rate(magnet_lease_failures_total[5m]) or vector(0)",
           "legendFormat": "Lease Failures Rate",
           "refId": "C"
         }
       ],
       "fieldConfig": {
         "defaults": {
+          "noValue": "0",
           "custom": {
             "drawStyle": "line"
           }
@@ -282,7 +283,7 @@
       "datasource": { "type": "prometheus", "uid": "Prometheus" },
       "targets": [
         {
-          "expr": "sum by (engine, error_type) (rate(magnet_engine_errors_total[5m]))",
+          "expr": "(sum by (engine, error_type) (rate(magnet_engine_errors_total[5m]))) or vector(0)",
           "legendFormat": "{{engine}} - {{error_type}}",
           "refId": "A"
         }
@@ -290,6 +291,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ops",
+          "noValue": "0",
           "custom": {
             "drawStyle": "bars"
           }
@@ -316,6 +318,7 @@
       ],
       "fieldConfig": {
         "defaults": {
+          "noValue": "0",
           "custom": {
             "drawStyle": "line"
           }
@@ -349,6 +352,7 @@
       ],
       "fieldConfig": {
         "defaults": {
+          "noValue": "0",
           "custom": {
             "drawStyle": "line"
           }
@@ -375,6 +379,7 @@
       ],
       "fieldConfig": {
         "defaults": {
+          "noValue": "0",
           "custom": {
             "drawStyle": "line"
           }
@@ -401,6 +406,7 @@
       ],
       "fieldConfig": {
         "defaults": {
+          "noValue": "0",
           "custom": {
             "drawStyle": "line"
           }

@@ -1,5 +1,14 @@
 # ISSUE.md — 已知问题与技术债
 
+## ✅ 已修复 | Grafana 大盘 Workers & Errors 面板缺少指标显示 No data
+- **发现日期**: 2026-10-23
+- **严重级**: 中
+- **现象**: Grafana 监控大盘中 `Active Workers & Leases` 与 `Engine Errors by Type` 两个监控面板显示 `No data`。
+- **复现**: 访问 `http://localhost:3000/d/magnet-platform-overview` 展开 `Workers, Leases & Errors` 折叠行。
+- **根因**: 后端未暴露 `magnet_active_workers` 与 `magnet_leases_active` Gauge，且 `magnet_lease_failures_total` 与 `magnet_engine_errors_total` 错误 Counter 未预热注册与常态化打点；Grafana 在 Counter 无增量或 rate 遇空时直接返回空结果，引发 `No data`。
+- **修复**: 在 `MonitoringMetrics` 增加 `magnet_active_workers`、`magnet_leases_active`，并预热注册错误 Counter，提供打点方法；在 `TaskService` 调度与错误路径实时刷新活跃 worker/租约并记录租约失败与引擎错误；同时在大盘 JSON 中补充 `or vector(0)` 与 `"noValue": "0"` 双重防护。
+- **验证**: Prometheus 端点返回 `magnet_active_workers 1.0`、`magnet_leases_active 2.0`、失败与错误 Counter 为 0.0；Grafana API 与大盘加载正常渲染数值与平稳基线。
+
 ## ✅ 已修复 | 调度 tick 串行获取快照导致高并发时调度抖动与任务延迟完成
 - **发现日期**: 2026-10-23
 - **严重级**: 中
