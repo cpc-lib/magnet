@@ -38,7 +38,7 @@ magnet/
 | **P4** | Resume 崩溃恢复、坏块重检、安全导出物化 (防穿越/软链接逃逸)、引用计数宽限期 GC | ✅ 已交付 | `ExportServiceTest` (6), `FileDownloadStorageTest` (6), `ReferenceGcServiceTest` (4), Worker 容器坏块重检验证 |
 | **P5** | 同宿主机双 Worker 租约、Epoch、磁盘 fencing 与故障接管 | ✅ 同机范围交付；跨主机未实现 | `TaskServiceTest`、`ApiIntegrationTest`、`GrpcLeaseTest`、`native/tests/test_ha.py` |
 | **P6** | aria2 HTTP/HTTPS 下载引擎；FTP/Metalink 后续单列 | ✅ HTTP/HTTPS 已通过实机验收 | `Aria2DownloadIntegrationTest` 真实下载、暂停恢复、重启续传与手动导出 |
-| **P7** | Prometheus 监控大盘与全链路吞吐压测调优 | ❌ 未纳入本次交付 | 明确排除于 P0–P4 交付范围 |
+| **P7** | Prometheus 监控与 Grafana 观测大盘、调度快照虚拟线程并发与超时熔断、全链路吞吐调优 | ✅ 已交付并通过实机验证 | Prometheus 抓取 `health: up`、Grafana 自动 Provision 大盘、真实 HTTP 资源实测大盘动态流转、40 并发任务 100% 达成 |
 
 ---
 
