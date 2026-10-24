@@ -133,6 +133,7 @@ python native/tests/test_ha.py
 21. 低基数监控与单会话吞吐计量：全量指标遵循低基数原则，标签仅保留受控枚举（engine、status、result、reason、error_type），禁止任何任务 ID、用户 ID、URL 等高基数维度；下载/上传速率严格基于底层引擎会话聚合（多个任务共享同资源时仅单次采集），禁止将单物理流吞吐倍乘。
 22. 调度器快照并发获取与超时熔断：将 tick 中对底层下载引擎的 RPC（renewLease、setDemand、snapshot）改造为三阶段模型。阶段 1 内存筛选待处理会话；阶段 2 采用虚拟线程并发向引擎发送 RPC 并设置 1000ms 超时熔断（防止单个卡死/慢引擎拖垮整个调度周期）；阶段 3 统一由主线程按 CAS 和租约更新任务进度与状态机，兼顾并发吞吐与严格事务安全。
 23. 监控大盘指标平稳基线原则：错误与失败 Counter（`magnet_lease_failures_total`、`magnet_engine_errors_total`）在应用启动时必须预热空标签注册（避免 rate 无时序导致 Grafana 判定 No data）；同时 Grafana PromQL 增加 `or vector(0)` 及 Panel 级 `noValue: "0"` 双重防护。活跃 Worker 与租约数（`magnet_active_workers`、`magnet_leases_active`）在每次调度 tick 末尾常态化刷新 Gauge。
+24. 环境配置文件导入优先级规范：遵循 Spring Boot `spring.config.import`“后导入覆盖先导入”规范，在 `application.yml` 中先导入子模块 `./server/download-api/.env[.properties]`，再导入根目录 `./.env[.properties]` 及 `../.env[.properties]`，确保无论在根目录还是子模块目录启动，根目录 `D:\release\magnet\.env` 始终具备更高覆盖优先级，系统环境变量具有最高优先级。
 
 ## 部署与边界
 
