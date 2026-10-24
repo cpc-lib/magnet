@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>com.magnetplatform</groupId>
+        <groupId>cc.ivera.magnet</groupId>
         <artifactId>magnet</artifactId>
         <version>0.1.0-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
@@ -14,23 +14,23 @@
     <description>HTTP、DTO、鉴权、WebSocket/SSE（Spring Boot 启动模块）</description>
     <dependencies>
         <dependency>
-            <groupId>com.magnetplatform</groupId>
+            <groupId>cc.ivera.magnet</groupId>
             <artifactId>download-application</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.magnetplatform</groupId>
+            <groupId>cc.ivera.magnet</groupId>
             <artifactId>download-infrastructure</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.magnetplatform</groupId>
+            <groupId>cc.ivera.magnet</groupId>
             <artifactId>download-engine-libtorrent</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.magnetplatform</groupId>
+            <groupId>cc.ivera.magnet</groupId>
             <artifactId>download-engine-aria2</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.magnetplatform</groupId>
+            <groupId>cc.ivera.magnet</groupId>
             <artifactId>download-scheduler</artifactId>
         </dependency>
         <dependency>

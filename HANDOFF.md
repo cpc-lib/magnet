@@ -1,6 +1,7 @@
 # HANDOFF — Magnet Platform
 
 > 最后更新：2026-10-23。P0–P7 已交付（含 P5 同宿主机双 Worker、P6 aria2 HTTP/HTTPS 直链分段下载、P7 监控大盘与 P7.2 虚拟线程快照并发调优）。按用户要求已完全移除工程中的测试目录与文件（`server/*/src/test`、`native/tests` 及 `benchmarks`），生产源码与业务功能保持完整。
+> **2026-10-23 包名迁移**：Java 根包 `com.magnetplatform` → `cc.ivera.magnet`；Maven `groupId` 同步；proto `package` 由 `magnetplatform.engine.v1` 改为 `cc.ivera.magnet.engine.v1`（含 `option java_package`），C++ 命名空间 `magnetplatform::engine::v1` → `cc::ivera::magnet::engine::v1` 同步更新。
 > 跨主机 fencing、宿主机/数据库/存储 HA、HTTP 入口负载均衡不在本次范围。
 > 历史提交：`99c1586`（P5 HA）、`7802b02`（SSE 补修）、`2dcad2b`（时间补修）。
 > P6 HTTP/HTTPS 实机补齐：`e0f754e`。

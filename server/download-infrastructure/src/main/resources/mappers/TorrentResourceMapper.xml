@@ -1,29 +1,29 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.magnetplatform.infrastructure.mapper.TorrentResourceMapper">
+<mapper namespace="cc.ivera.magnet.infrastructure.mapper.TorrentResourceMapper">
 
-    <resultMap id="resource" type="com.magnetplatform.domain.resource.TorrentResource">
+    <resultMap id="resource" type="cc.ivera.magnet.domain.resource.TorrentResource">
         <constructor>
             <arg column="id" javaType="java.util.UUID"/>
             <arg column="canonical_key" javaType="java.lang.String"/>
             <arg column="btih" javaType="byte[]"/>
             <arg column="btmh" javaType="byte[]"/>
-            <arg column="version_type" javaType="com.magnetplatform.domain.resource.VersionType"/>
+            <arg column="version_type" javaType="cc.ivera.magnet.domain.resource.VersionType"/>
             <arg column="name" javaType="java.lang.String"/>
             <arg column="piece_length" javaType="java.lang.Long"/>
             <arg column="total_bytes" javaType="java.lang.Long"/>
             <arg column="private_flag" javaType="boolean"/>
             <arg column="metadata_source" javaType="java.lang.String"/>
             <arg column="trackers" javaType="java.util.List"
-                 typeHandler="com.magnetplatform.infrastructure.mybatis.JsonListTypeHandler"/>
+                 typeHandler="cc.ivera.magnet.infrastructure.mybatis.JsonListTypeHandler"/>
             <arg column="file_count" javaType="java.lang.Integer"/>
             <arg column="created_at" javaType="java.time.LocalDateTime"/>
             <arg column="metadata_path" javaType="java.lang.String"/>
         </constructor>
     </resultMap>
 
-    <resultMap id="file" type="com.magnetplatform.domain.resource.TorrentFileInfo">
+    <resultMap id="file" type="cc.ivera.magnet.domain.resource.TorrentFileInfo">
         <constructor>
             <arg column="file_index" javaType="int"/>
             <arg column="relative_path" javaType="java.lang.String"/>
@@ -46,11 +46,11 @@
         LIMIT 1
     </select>
 
-    <insert id="insert" parameterType="com.magnetplatform.domain.resource.TorrentResource">
+    <insert id="insert" parameterType="cc.ivera.magnet.domain.resource.TorrentResource">
         INSERT INTO torrent_resource (<include refid="columns"/>)
         VALUES (#{id}, #{canonicalKey}, #{btih}, #{btmh}, #{versionType}, #{name}, #{pieceLength},
                 #{totalBytes}, #{privateFlag}, #{metadataSource},
-                #{trackers, typeHandler=com.magnetplatform.infrastructure.mybatis.JsonListTypeHandler},
+                #{trackers, typeHandler=cc.ivera.magnet.infrastructure.mybatis.JsonListTypeHandler},
                 #{fileCount}, #{createdAt}, #{metadataPath})
     </insert>
 
@@ -59,11 +59,11 @@
         VALUES (#{hashType}, #{hashBytes}, #{resourceId})
     </insert>
 
-    <update id="update" parameterType="com.magnetplatform.domain.resource.TorrentResource">
+    <update id="update" parameterType="cc.ivera.magnet.domain.resource.TorrentResource">
         UPDATE torrent_resource
         SET btih = #{btih}, btmh = #{btmh}, version_type = #{versionType}, name = #{name},
             piece_length = #{pieceLength}, total_bytes = #{totalBytes}, private_flag = #{privateFlag},
-            trackers = #{trackers, typeHandler=com.magnetplatform.infrastructure.mybatis.JsonListTypeHandler},
+            trackers = #{trackers, typeHandler=cc.ivera.magnet.infrastructure.mybatis.JsonListTypeHandler},
             file_count = #{fileCount}, metadata_path = #{metadataPath}
         WHERE id = #{id}
     </update>

@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.magnetplatform.infrastructure.mapper.DownloadTaskMapper">
+<mapper namespace="cc.ivera.magnet.infrastructure.mapper.DownloadTaskMapper">
 
-    <resultMap id="task" type="com.magnetplatform.domain.task.DownloadTask">
+    <resultMap id="task" type="cc.ivera.magnet.domain.task.DownloadTask">
         <constructor>
             <arg column="id" javaType="java.util.UUID"/>
             <arg column="user_id" javaType="java.util.UUID"/>
             <arg column="resource_id" javaType="java.util.UUID"/>
-            <arg column="status" javaType="com.magnetplatform.domain.task.TaskStatus"/>
+            <arg column="status" javaType="cc.ivera.magnet.domain.task.TaskStatus"/>
             <arg column="selected_bytes" javaType="long"/>
             <arg column="verified_bytes" javaType="long"/>
             <arg column="priority" javaType="int"/>
@@ -25,7 +25,7 @@
         </constructor>
     </resultMap>
 
-    <resultMap id="taskFile" type="com.magnetplatform.domain.task.DownloadTaskFile">
+    <resultMap id="taskFile" type="cc.ivera.magnet.domain.task.DownloadTaskFile">
         <constructor>
             <arg column="id" javaType="java.util.UUID"/>
             <arg column="task_id" javaType="java.util.UUID"/>
@@ -40,14 +40,14 @@
         speed_limit, target_subdirectory, error_code, error_message, version, created_at, updated_at,
         started_at, completed_at, deleted_at</sql>
 
-    <insert id="insert" parameterType="com.magnetplatform.domain.task.DownloadTask">
+    <insert id="insert" parameterType="cc.ivera.magnet.domain.task.DownloadTask">
         INSERT INTO download_task (<include refid="taskColumns"/>)
         VALUES (#{id}, #{userId}, #{resourceId}, #{status}, #{selectedBytes}, #{verifiedBytes},
                 #{priority}, #{speedLimit}, #{targetSubdirectory}, #{errorCode}, #{errorMessage},
                 #{version}, #{createdAt}, #{updatedAt}, #{startedAt}, #{completedAt}, #{deletedAt})
     </insert>
 
-    <insert id="insertFile" parameterType="com.magnetplatform.domain.task.DownloadTaskFile">
+    <insert id="insertFile" parameterType="cc.ivera.magnet.domain.task.DownloadTaskFile">
         INSERT INTO download_task_file (id, task_id, file_index, selected, verified_bytes, export_state)
         VALUES (#{id}, #{taskId}, #{fileIndex}, #{selected}, #{verifiedBytes}, #{exportState})
     </insert>
@@ -117,10 +117,10 @@
         WHERE resource_id = #{resourceId} AND deleted_at IS NULL
     </select>
 
-    <resultMap id="taskStatusEngineCount" type="com.magnetplatform.application.TaskStatusEngineCount">
+    <resultMap id="taskStatusEngineCount" type="cc.ivera.magnet.application.TaskStatusEngineCount">
         <constructor>
-            <arg column="status" javaType="com.magnetplatform.domain.task.TaskStatus"/>
-            <arg column="engine_type" javaType="com.magnetplatform.spi.EngineKind"/>
+            <arg column="status" javaType="cc.ivera.magnet.domain.task.TaskStatus"/>
+            <arg column="engine_type" javaType="cc.ivera.magnet.spi.EngineKind"/>
             <arg column="task_count" javaType="java.lang.Long"/>
         </constructor>
     </resultMap>

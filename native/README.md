@@ -12,7 +12,7 @@ native/
 │   ├── CMakeLists.txt          # protoc 生成链 + 链接配置
 │   └── src/main.cpp            # DownloadEngine 服务实现
 └── proto/
-    └── download_engine.proto   # Java ↔ C++ 契约（package magnetplatform.engine.v1）
+    └── download_engine.proto   # Java ↔ C++ 契约（package cc.ivera.magnet.engine.v1）
 ```
 
 ## 构建镜像

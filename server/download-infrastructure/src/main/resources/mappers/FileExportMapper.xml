@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.magnetplatform.infrastructure.mapper.FileExportMapper">
+<mapper namespace="cc.ivera.magnet.infrastructure.mapper.FileExportMapper">
 
-    <resultMap id="fileExport" type="com.magnetplatform.domain.export.FileExport">
+    <resultMap id="fileExport" type="cc.ivera.magnet.domain.export.FileExport">
         <constructor>
             <arg column="id" javaType="java.util.UUID"/>
             <arg column="task_id" javaType="java.util.UUID"/>
@@ -12,7 +12,7 @@
             <arg column="file_index" javaType="java.lang.Integer"/>
             <arg column="relative_path" javaType="java.lang.String"/>
             <arg column="target_path" javaType="java.lang.String"/>
-            <arg column="state" javaType="com.magnetplatform.domain.export.ExportState"/>
+            <arg column="state" javaType="cc.ivera.magnet.domain.export.ExportState"/>
             <arg column="bytes" javaType="java.lang.Long"/>
             <arg column="error_code" javaType="java.lang.String"/>
             <arg column="error_message" javaType="java.lang.String"/>
@@ -24,7 +24,7 @@
     <sql id="columns">id, task_id, user_id, resource_id, file_index, relative_path, target_path,
         state, bytes, error_code, error_message, created_at, updated_at</sql>
 
-    <insert id="insert" parameterType="com.magnetplatform.domain.export.FileExport">
+    <insert id="insert" parameterType="cc.ivera.magnet.domain.export.FileExport">
         INSERT INTO file_export (<include refid="columns"/>)
         VALUES (#{id}, #{taskId}, #{userId}, #{resourceId}, #{fileIndex}, #{relativePath}, #{targetPath},
                 #{state}, #{bytes}, #{errorCode}, #{errorMessage}, #{createdAt}, #{updatedAt})

@@ -47,7 +47,7 @@ public:
         }
     }
 
-    grpc::Status validate(const magnetplatform::engine::v1::CommandEnvelope& env,
+    grpc::Status validate(const cc::ivera::magnet::engine::v1::CommandEnvelope& env,
                           bool adding, bool needs_data_lease) {
         const auto now = now_ms();
         const auto expiry = env.lease_until().seconds() * 1000 + env.lease_until().nanos() / 1000000;

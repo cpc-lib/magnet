@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.magnetplatform.infrastructure.mapper.EngineSessionMapper">
+<mapper namespace="cc.ivera.magnet.infrastructure.mapper.EngineSessionMapper">
 
-    <resultMap id="session" type="com.magnetplatform.domain.task.EngineSessionRecord">
+    <resultMap id="session" type="cc.ivera.magnet.domain.task.EngineSessionRecord">
         <constructor>
             <arg column="id" javaType="java.util.UUID"/>
             <arg column="resource_id" javaType="java.util.UUID"/>
@@ -27,7 +27,7 @@
         WHERE resource_id = #{resourceId} AND engine_type = #{engineType}
     </select>
 
-    <insert id="insert" parameterType="com.magnetplatform.domain.task.EngineSessionRecord">
+    <insert id="insert" parameterType="cc.ivera.magnet.domain.task.EngineSessionRecord">
         INSERT INTO engine_session (<include refid="columns"/>)
         VALUES (#{id}, #{resourceId}, #{workerId}, #{engineType}, #{state}, #{ownerEpoch},
                 #{leaseUntil}, #{resumeVersion}, #{createdAt}, #{updatedAt}, #{resumePath})

@@ -1,6 +1,8 @@
 syntax = "proto3";
 
-package magnetplatform.engine.v1;
+package cc.ivera.magnet.engine.v1;
+
+option java_package = "cc.ivera.magnet.engine.v1";
 
 import "google/protobuf/timestamp.proto";
 

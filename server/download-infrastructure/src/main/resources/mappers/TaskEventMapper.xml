@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.magnetplatform.infrastructure.mapper.TaskEventMapper">
+<mapper namespace="cc.ivera.magnet.infrastructure.mapper.TaskEventMapper">
 
-    <resultMap id="event" type="com.magnetplatform.domain.task.TaskEvent">
+    <resultMap id="event" type="cc.ivera.magnet.domain.task.TaskEvent">
         <constructor>
             <arg column="id" javaType="java.util.UUID"/>
             <arg column="task_id" javaType="java.util.UUID"/>
@@ -14,7 +14,7 @@
         </constructor>
     </resultMap>
 
-    <insert id="insert" parameterType="com.magnetplatform.domain.task.TaskEvent">
+    <insert id="insert" parameterType="cc.ivera.magnet.domain.task.TaskEvent">
         INSERT INTO task_event (id, task_id, seq, event_type, payload_json, created_at)
         VALUES (#{id}, #{taskId}, #{seq}, #{eventType}, #{payloadJson}, #{createdAt})
     </insert>

@@ -44,20 +44,20 @@
 
 namespace {
 
-using magnetplatform::engine::v1::DownloadEngine;
-using magnetplatform::engine::v1::CommandRequest;
-using magnetplatform::engine::v1::CommandResponse;
-using magnetplatform::engine::v1::AddTorrentRequest;
-using magnetplatform::engine::v1::AddTorrentResponse;
-using magnetplatform::engine::v1::UpdateFilePrioritiesRequest;
-using magnetplatform::engine::v1::UpdateFilePrioritiesResponse;
-using magnetplatform::engine::v1::GetSnapshotRequest;
-using magnetplatform::engine::v1::GetSnapshotResponse;
-using magnetplatform::engine::v1::SaveResumeDataRequest;
-using magnetplatform::engine::v1::SaveResumeDataResponse;
-using magnetplatform::engine::v1::RemoveTorrentRequest;
-using magnetplatform::engine::v1::HealthRequest;
-using magnetplatform::engine::v1::HealthResponse;
+using cc::ivera::magnet::engine::v1::DownloadEngine;
+using cc::ivera::magnet::engine::v1::CommandRequest;
+using cc::ivera::magnet::engine::v1::CommandResponse;
+using cc::ivera::magnet::engine::v1::AddTorrentRequest;
+using cc::ivera::magnet::engine::v1::AddTorrentResponse;
+using cc::ivera::magnet::engine::v1::UpdateFilePrioritiesRequest;
+using cc::ivera::magnet::engine::v1::UpdateFilePrioritiesResponse;
+using cc::ivera::magnet::engine::v1::GetSnapshotRequest;
+using cc::ivera::magnet::engine::v1::GetSnapshotResponse;
+using cc::ivera::magnet::engine::v1::SaveResumeDataRequest;
+using cc::ivera::magnet::engine::v1::SaveResumeDataResponse;
+using cc::ivera::magnet::engine::v1::RemoveTorrentRequest;
+using cc::ivera::magnet::engine::v1::HealthRequest;
+using cc::ivera::magnet::engine::v1::HealthResponse;
 
 // ---- Worker 内部状态 ----
 
@@ -661,8 +661,8 @@ public:
         return grpc::Status::OK;
     }
     // 轮询式：会话已由 AddTorrent 挂上；元数据就绪→返回 .torrent 字节，未就绪→PENDING
-    grpc::Status ResolveMetadata(grpc::ServerContext*, const magnetplatform::engine::v1::ResolveMetadataRequest* req,
-                                 magnetplatform::engine::v1::ResolveMetadataResponse* resp) override {
+    grpc::Status ResolveMetadata(grpc::ServerContext*, const cc::ivera::magnet::engine::v1::ResolveMetadataRequest* req,
+                                 cc::ivera::magnet::engine::v1::ResolveMetadataResponse* resp) override {
         std::lock_guard<std::mutex> command_lock(g_command_mutex);
         const auto fenced = g_fences->validate(req->envelope(), false, false);
         if (!fenced.ok()) return fenced;
@@ -718,8 +718,8 @@ public:
         return grpc::Status::OK;
     }
     grpc::Status StreamAlerts(grpc::ServerContext* context,
-                             const magnetplatform::engine::v1::AlertStreamRequest* /*req*/,
-                             grpc::ServerWriter<magnetplatform::engine::v1::Alert>* /*writer*/) override {
+                             const cc::ivera::magnet::engine::v1::AlertStreamRequest* /*req*/,
+                             grpc::ServerWriter<cc::ivera::magnet::engine::v1::Alert>* /*writer*/) override {
         context->TryCancel();
         return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "StreamAlerts 尚未实现");
     }

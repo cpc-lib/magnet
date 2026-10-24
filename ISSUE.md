@@ -95,7 +95,7 @@
 ## ✅ 已修复 | MyBatis Record 构造器在 COUNT(*) 映射时抛 NoSuchMethodException
 - **发现日期**: 2026-10-23
 - **严重级**: 中
-- **现象**: 调度 tick 执行按状态聚合任务统计 SQL 时，MyBatis 抛出 `ReflectionException: Error instantiating class com.magnetplatform.application.TaskStatusEngineCount with invalid types (..., Long) or values ... Cause: java.lang.NoSuchMethodException`。
+- **现象**: 调度 tick 执行按状态聚合任务统计 SQL 时，MyBatis 抛出 `ReflectionException: Error instantiating class cc.ivera.magnet.application.TaskStatusEngineCount with invalid types (..., Long) or values ... Cause: java.lang.NoSuchMethodException`。
 - **复现**: 在带有聚合查询结果的数据库上调用 `DownloadTaskRepository.countByStatusAndEngine()`。
 - **根因**: SQL `COUNT(*)` 返回 `java.lang.Long`，而 Java Record `TaskStatusEngineCount` 仅声明了原始类型 `long`，MyBatis 反射寻找构造函数时无法将 `java.lang.Long` 自动开箱为 `long` 匹配构造器签名。
 - **修复**: commit `e86f018`；在 `TaskStatusEngineCount` Record 中将字段调整为 `Long` 并提供重载构造器，Mapper XML 显式声明 `javaType="java.lang.Long"`。
