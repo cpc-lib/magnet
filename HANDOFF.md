@@ -1,6 +1,6 @@
 # HANDOFF — Magnet Platform
 
-> 最后更新：2026-10-23。P0–P4 已交付；P5 同宿主机双 Worker 故障接管已实现；P6 多协议（HTTP/HTTPS 直链分段下载与 aria2 JSON-RPC 引擎集成）已交付；P7 监控与 Grafana 观测大盘（Prometheus scrape、Basic Auth 安全隔离、健康优先大盘）已交付。
+> 最后更新：2026-10-23。P0–P7 已交付（含 P5 同宿主机双 Worker、P6 aria2 HTTP/HTTPS 直链分段下载、P7 监控大盘与 P7.2 虚拟线程快照并发调优）。按用户要求已完全移除工程中的测试目录与文件（`server/*/src/test`、`native/tests` 及 `benchmarks`），生产源码与业务功能保持完整。
 > 跨主机 fencing、宿主机/数据库/存储 HA、HTTP 入口负载均衡不在本次范围。
 > 历史提交：`99c1586`（P5 HA）、`7802b02`（SSE 补修）、`2dcad2b`（时间补修）。
 > P6 HTTP/HTTPS 实机补齐：`e0f754e`。
