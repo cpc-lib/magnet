@@ -88,6 +88,8 @@ class Aria2DownloadIntegrationTest {
         registry.add("magnet.storage.root", STORAGE::toString);
         registry.add("magnet.engine.libtorrent.grpc.enabled", () -> "false");
         registry.add("magnet.engine.aria2.rpc.enabled", () -> "true");
+        registry.add("magnet.engine.aria2.mock.enabled", () -> "false");
+        registry.add("magnet.engine.aria2.rpc.secret", () -> "");
         registry.add("magnet.engine.aria2.rpc.endpoint", Aria2DownloadIntegrationTest::endpoint);
         registry.add("magnet.engine.aria2.rpc.storage-root", () -> "/data");
         registry.add("magnet.parse.sweep-delay-ms", () -> "600000");

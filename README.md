@@ -157,20 +157,33 @@ docker run --rm --network none magnet-aria2:latest --version
 ```
 
 成功后本地应存在 `magnet-aria2:latest`。集成测试使用的 `magnet-aria2:acceptance`
-是独立测试标签，不能代替运行镜像。然后设置 RPC 密钥并启动 aria2：
+是独立测试标签，不能代替运行镜像。
+
+启动前，将下列配置保存到仓库根目录 `.env`。如果 `server/download-api/.env` 存在，
+也写入相同配置；API 子模块配置会覆盖根目录配置，两处密钥必须一致。
+把示例密钥替换为自己的随机密钥，不能留空：
+
+```properties
+MAGNET_ARIA2_RPC_ENABLED=true
+MAGNET_ARIA2_RPC_ENDPOINT=http://localhost:6800/jsonrpc
+MAGNET_ARIA2_RPC_SECRET=替换为自己的随机密钥
+MAGNET_ARIA2_STORAGE_ROOT=/data
+```
+
+`.env` 已被 Git 忽略。缺少 RPC 密钥时容器会退出并提示
+`Set MAGNET_ARIA2_RPC_SECRET before starting aria2`，此时仅构建镜像或执行 `docker start` 无法解决，
+必须保存配置并用 Compose 重新创建容器：
 
 ```powershell
-$env:MAGNET_ARIA2_RPC_SECRET = '替换为自己的随机密钥'
-docker compose -f infra/docker-compose.yml --profile http up -d --build aria2
-$env:MAGNET_ARIA2_RPC_ENABLED = 'true'
-$env:MAGNET_ARIA2_RPC_ENDPOINT = 'http://localhost:6800/jsonrpc'
-$env:MAGNET_ARIA2_STORAGE_ROOT = '/data'
+docker compose --env-file .env -f infra/docker-compose.yml --profile http up -d --build --no-deps aria2
+docker compose --env-file .env -f infra/docker-compose.yml --profile http ps aria2
 $env:STORAGE_ROOT = (Resolve-Path server/download-api/data).Path
 mvn install "-DskipTests"
 mvn -pl server/download-api spring-boot:run
 ```
 
-API 启动命令沿用第三节的模块启动方式；上面的变量必须在 API 进程所在窗口中设置。
+API 启动命令沿用第三节的模块启动方式；修改 `.env` 后需重启 API 才会读取新配置。
+如果启动窗口曾设置过同名环境变量，需清除旧值或保持与 `.env` 一致，环境变量优先级更高。
 容器 `/data` 与宿主机 `server/download-api/data` 必须指向同一物理目录。
 aria2 收到 `/data/resources/<resourceId>`；API 从宿主机 STORAGE_ROOT 读取并安全导出。
 文件名以解析结果为准，不允许 aria2 自动改名。默认禁用 aria2 时 HTTP 任务保持排队，
