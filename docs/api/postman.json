@@ -1,0 +1,242 @@
+{
+	"info": {
+		"name": "Magnet Platform API",
+		"description": "Magnet Platform 后端 REST API 集合。基于 Spring Boot 3 + JWT 认证。\n\n## 认证\n\n除 `/api/v1/auth/register` 和 `/api/v1/auth/login` 外，所有端点都需要 `Authorization: Bearer <token>` 头。\n\n## 错误码\n\n统一错误响应格式：`{\"code\":\"ERROR_CODE\",\"message\":\"描述\"}`\n\n| HTTP | code | 说明 |\n|---|---|---|\n| 400 | VALIDATION | 请求参数不合法 |\n| 401 | UNAUTHORIZED | 未认证或 token 无效 |\n| 403 | FORBIDDEN | 无权限访问该资源 |\n| 404 | NOT_FOUND | 资源不存在 |\n| 409 | CONFLICT | 资源状态冲突 |\n| 410 | INPUT_LOST | 资源元数据已丢失 |\n| 422 | INVALID_MAGNET / INVALID_TORRENT / INVALID_PATH | 输入内容不合法 |\n| 429 | RATE_LIMITED | 请求频率超限 |\n| 500 | EXPORT_IO_ERROR | 导出 IO 错误 |\n| 503 | WORKER_UNAVAILABLE | 下载引擎不可用 |\n| 504 | METADATA_TIMEOUT | 元数据获取超时 |",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Auth",
+			"description": "用户注册与登录",
+			"item": [
+				{
+					"name": "Register",
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Content-Type", "value": "application/json"}],
+						"url": {"raw": "{{base_url}}/api/v1/auth/register", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "register"]},
+						"body": {"mode": "raw", "raw": "{\n  \"username\": \"alice\",\n  \"password\": \"secure-password\"\n}"},
+						"description": "注册新用户，返回 JWT token 和用户信息。201 Created。"
+					}
+				},
+				{
+					"name": "Login",
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Content-Type", "value": "application/json"}],
+						"url": {"raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"]},
+						"body": {"mode": "raw", "raw": "{\n  \"username\": \"alice\",\n  \"password\": \"secure-password\"\n}"},
+						"description": "登录获取 JWT token。200 OK。"
+					}
+				}
+			]
+		},
+		{
+			"name": "Parse",
+			"description": "资源解析（Magnet / .torrent / HTTP 直链）",
+			"item": [
+				{
+					"name": "Submit Magnet URI",
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/parses", "host": ["{{base_url}}"], "path": ["api", "v1", "parses"]},
+						"body": {"mode": "raw", "raw": "{\n  \"uri\": \"magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c\"\n}"},
+						"description": "提交 Magnet URI 或 HTTP/HTTPS 直链进行解析。201 Created。"
+					}
+				},
+				{
+					"name": "Upload .torrent File",
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/parses/upload", "host": ["{{base_url}}"], "path": ["api", "v1", "parses", "upload"]},
+						"body": {"mode": "formdata", "formdata": [{"key": "file", "type": "file", "src": "/path/to/file.torrent"}]},
+						"description": "上传 .torrent 文件进行解析。201 Created。"
+					}
+				},
+				{
+					"name": "List Parse Jobs",
+					"request": {
+						"method": "GET",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/parses?page=1&size=30&status=COMPLETED", "host": ["{{base_url}}"], "path": ["api", "v1", "parses"], "query": [{"key": "page", "value": "1"}, {"key": "size", "value": "30"}, {"key": "status", "value": "COMPLETED", "description": "可选：PENDING/RUNNING/COMPLETED/FAILED"}]},
+						"description": "分页查询当前用户的解析历史。"
+					}
+				},
+				{
+					"name": "Get Parse Job",
+					"request": {
+						"method": "GET",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/parses/{{parse_id}}", "host": ["{{base_url}}"], "path": ["api", "v1", "parses", "{{parse_id}}"]},
+						"description": "查询单个解析任务详情（含 resourceId）。"
+					}
+				},
+				{
+					"name": "Retry Parse Job",
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/parses/{{parse_id}}/retry", "host": ["{{base_url}}"], "path": ["api", "v1", "parses", "{{parse_id}}", "retry"]},
+						"description": "重试失败的解析任务。"
+					}
+				}
+			]
+		},
+		{
+			"name": "Resource",
+			"description": "已解析资源的文件清单",
+			"item": [
+				{
+					"name": "Get Resource Files",
+					"request": {
+						"method": "GET",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/resources/{{resource_id}}/files", "host": ["{{base_url}}"], "path": ["api", "v1", "resources", "{{resource_id}}", "files"]},
+						"description": "获取资源的文件列表（含 fileIndex、路径、大小）。"
+					}
+				}
+			]
+		},
+		{
+			"name": "Task",
+			"description": "下载任务生命周期管理",
+			"item": [
+				{
+					"name": "Create Task",
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks"]},
+						"body": {"mode": "raw", "raw": "{\n  \"parseId\": \"{{parse_id}}\",\n  \"fileIndices\": [0, 1],\n  \"targetSubdirectory\": \"movies/2024\",\n  \"startImmediately\": true,\n  \"priority\": 5\n}"},
+						"description": "从已完成的解析创建下载任务。201 Created。"
+					}
+				},
+				{
+					"name": "List Tasks",
+					"request": {
+						"method": "GET",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks?page=1&size=30&status=DOWNLOADING", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks"], "query": [{"key": "page", "value": "1"}, {"key": "size", "value": "30"}, {"key": "status", "value": "DOWNLOADING", "description": "可选：QUEUED/STARTING/DOWNLOADING/VERIFYING/PAUSED/COMPLETED/FAILED/RETRY_WAIT/REPAIRING/DELETED"}]},
+						"description": "分页查询当前用户的任务列表。"
+					}
+				},
+				{
+					"name": "Get Task",
+					"request": {
+						"method": "GET",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks/{{task_id}}", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks", "{{task_id}}"]},
+						"description": "查询单个任务详情（含进度、状态、错误信息）。"
+					}
+				},
+				{
+					"name": "Pause Task",
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks/{{task_id}}/pause", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks", "{{task_id}}", "pause"]},
+						"description": "暂停下载任务。共享会话中仅收回该用户需求。"
+					}
+				},
+				{
+					"name": "Resume Task",
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks/{{task_id}}/resume", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks", "{{task_id}}", "resume"]},
+						"description": "恢复已暂停的任务。"
+					}
+				},
+				{
+					"name": "Retry Task",
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks/{{task_id}}/retry", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks", "{{task_id}}", "retry"]},
+						"description": "重试失败的任务。"
+					}
+				},
+				{
+					"name": "Update Task",
+					"request": {
+						"method": "PATCH",
+						"header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks/{{task_id}}", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks", "{{task_id}}"]},
+						"body": {"mode": "raw", "raw": "{\n  \"priority\": 10,\n  \"speedLimit\": 1048576\n}"},
+						"description": "更新任务优先级或限速（speedLimit 单位：字节/秒）。"
+					}
+				},
+				{
+					"name": "Delete Task",
+					"request": {
+						"method": "DELETE",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks/{{task_id}}?removeOwnExport=true", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks", "{{task_id}}"], "query": [{"key": "removeOwnExport", "value": "true", "description": "是否同时删除已导出的文件副本"}]},
+						"description": "删除任务。204 No Content。"
+					}
+				},
+				{
+					"name": "Get Task Files",
+					"request": {
+						"method": "GET",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks/{{task_id}}/files", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks", "{{task_id}}", "files"]},
+						"description": "获取任务的文件级进度列表。"
+					}
+				},
+				{
+					"name": "Task Events (SSE)",
+					"request": {
+						"method": "GET",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}, {"key": "Accept", "value": "text/event-stream"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks/{{task_id}}/events?afterSeq=0", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks", "{{task_id}}", "events"], "query": [{"key": "afterSeq", "value": "0", "description": "从该序号之后开始补拉事件"}]},
+						"description": "SSE 事件流：先补拉持久化事件，再每 2 秒推送 SNAPSHOT。任务终态后自动关闭。"
+					}
+				}
+			]
+		},
+		{
+			"name": "Export",
+			"description": "已完成任务的文件导出",
+			"item": [
+				{
+					"name": "List Exports",
+					"request": {
+						"method": "GET",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks/{{task_id}}/exports", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks", "{{task_id}}", "exports"]},
+						"description": "查询任务的导出记录列表。"
+					}
+				},
+				{
+					"name": "Trigger Export",
+					"request": {
+						"method": "POST",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks/{{task_id}}/exports", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks", "{{task_id}}", "exports"]},
+						"description": "手动触发已完成任务的文件导出（物化到导出目录）。"
+					}
+				},
+				{
+					"name": "Download Exported File",
+					"request": {
+						"method": "GET",
+						"header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+						"url": {"raw": "{{base_url}}/api/v1/tasks/{{task_id}}/exports/{{export_id}}/content", "host": ["{{base_url}}"], "path": ["api", "v1", "tasks", "{{task_id}}", "exports", "{{export_id}}", "content"]},
+						"description": "下载已导出的文件内容（Content-Disposition: attachment）。"
+					}
+				}
+			]
+		}
+	],
+	"variable": [
+		{"key": "base_url", "value": "http://localhost:8080", "description": "后端服务地址"},
+		{"key": "token", "value": "", "description": "JWT token（登录后自动填入）"},
+		{"key": "parse_id", "value": "", "description": "解析任务 UUID"},
+		{"key": "resource_id", "value": "", "description": "资源 UUID"},
+		{"key": "task_id", "value": "", "description": "下载任务 UUID"},
+		{"key": "export_id", "value": "", "description": "导出记录 UUID"}
+	]
+}
