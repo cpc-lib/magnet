@@ -49,6 +49,9 @@ magnet:
     sweep-delay-ms: ${PARSE_SWEEP_DELAY_MS:5000}
   storage:
     root: ${STORAGE_ROOT:./data}
+  metrics:
+    scrape-user: ${MAGNET_METRICS_SCRAPE_USER:prometheus}
+    scrape-password-file: ${MAGNET_METRICS_SCRAPE_PASSWORD_FILE:./infra/.secrets/prometheus-scrape-password}
   gc:
     grace-seconds: ${GC_GRACE_SECONDS:300}
     sweep-delay-ms: ${GC_SWEEP_DELAY_MS:60000}
@@ -67,3 +70,18 @@ magnet:
         secret: ${MAGNET_ARIA2_RPC_SECRET:}
         timeout-seconds: ${MAGNET_ARIA2_RPC_TIMEOUT:10}
         storage-root: ${MAGNET_ARIA2_STORAGE_ROOT:/data}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: never
+    prometheus:
+      enabled: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true

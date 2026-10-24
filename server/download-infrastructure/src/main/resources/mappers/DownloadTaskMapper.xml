@@ -121,7 +121,7 @@
         <constructor>
             <arg column="status" javaType="com.magnetplatform.domain.task.TaskStatus"/>
             <arg column="engine_type" javaType="com.magnetplatform.spi.EngineKind"/>
-            <arg column="task_count" javaType="long"/>
+            <arg column="task_count" javaType="java.lang.Long"/>
         </constructor>
     </resultMap>
 
