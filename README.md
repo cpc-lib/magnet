@@ -77,6 +77,16 @@ mvn spring-boot:run
 
 API 默认监听端口 `8080`，健康探针与接口根路径 `/api/v1`。
 
+> **提示（传递 JVM 参数与网络代理）**：
+> 在本地开发时，若需要解析和探活处于代理网络环境下的境外资源（如境外图片、GitHub 发布包等），Java 原生客户端默认不读取环境变量中的 `HTTP_PROXY`/`HTTPS_PROXY`，可通过 `spring-boot.run.jvmArguments` 参数让 JVM 继承系统代理：
+> ```powershell
+> # 让 JVM 自动读取系统代理设置：
+> mvn spring-boot:run "-Dspring-boot.run.jvmArguments=-Djava.net.useSystemProxies=true"
+>
+> # 或显式指定本地代理地址与端口（以 10808 为例）：
+> mvn spring-boot:run "-Dspring-boot.run.jvmArguments=-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=10808 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=10808"
+> ```
+
 ### 3. 启动 React 前端 Web 服务
 
 ```powershell
@@ -182,7 +192,7 @@ mvn install "-DskipTests"
 mvn -pl server/download-api spring-boot:run
 ```
 
-API 启动命令沿用第三节的模块启动方式；修改 `.env` 后需重启 API 才会读取新配置。
+API 启动命令沿用第三节的模块启动方式（需要代理探活境外直链时同样可追加 `"-Dspring-boot.run.jvmArguments=-Djava.net.useSystemProxies=true"`）；修改 `.env` 后需重启 API 才会读取新配置。
 如果启动窗口曾设置过同名环境变量，需清除旧值或保持与 `.env` 一致，环境变量优先级更高。
 容器 `/data` 与宿主机 `server/download-api/data` 必须指向同一物理目录。
 aria2 收到 `/data/resources/<resourceId>`；API 从宿主机 STORAGE_ROOT 读取并安全导出。
