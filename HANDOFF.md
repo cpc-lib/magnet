@@ -185,7 +185,7 @@ python native/tests/test_ha.py
 - VPN/TUN 可能让测试源自动选出的宿主地址与容器网桥重叠，造成真实 aria2 测试 Connection refused；
   测试支持 `MAGNET_TEST_SOURCE_HOST` 显式指定可达 IPv4，生成的测试证书 SAN 同步使用该地址。
 
-- HTTP 资源解析探活与 JVM 代理：Java 原生 `HttpClient` 默认不继承系统环境变量中的 `HTTP_PROXY`/`HTTPS_PROXY`，访问需走本地代理的境外或 CDN 资源时探活直接超时；开发环境启动 Spring Boot 时需传入 `-Djava.net.useSystemProxies=true` 以复用系统代理设置。
+- HTTP 资源解析探活与代理支持：Java 原生 `HttpClient` 默认不继承系统环境变量中的 `HTTP_PROXY`/`HTTPS_PROXY`。`HttpProbeService` 采用显式构造函数注入（必须显式标注 `@Autowired` 避免 Spring 默认选择无参构造器），支持 `magnet.http.proxy` 配置及环境变量自动回退，并清洗 `http://` 协议头；默认探活超时放宽至 15 秒并携带现代浏览器 User-Agent，确保境外 CDN 资源探活稳定。
 - Spring Boot 3.3.5 Actuator 暴露 Prometheus：需显式声明 `management.prometheus.metrics.export.enabled: true`，仅配置 `management.endpoints.web.exposure.include` 不足以激活 Prometheus 抓取端点映射。
 - Spring Boot Actuator 与特定安全切片测试排斥：引入 `spring-boot-starter-actuator` 后，若切片测试（如 `SseDisconnectIntegrationTest`）排除了 `SecurityAutoConfiguration`，需在 `application.yml` 全局排除 `ManagementWebSecurityAutoConfiguration`，否则容器启动时会因缺失 `HttpSecurity` 候选 Bean 报错；业务端点与 Prometheus 抓取端点通过 `@Order(1)` 和 `@Order(2)` 的自定义 `SecurityFilterChain` 进行严密控制。
 - MyBatis Record 映射与 SQL 聚合类型匹配：SQL `COUNT(*)` 聚合结果为 `java.lang.Long`，Record 构造器参数若仅有原始类型 `long`，MyBatis 在匹配构造函数反射时会抛出 `NoSuchMethodException`，Record 需显式提供接受包装类型 `Long` 的构造方法。

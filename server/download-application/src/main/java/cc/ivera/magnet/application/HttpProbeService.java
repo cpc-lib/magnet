@@ -4,6 +4,7 @@ import cc.ivera.magnet.domain.common.DomainException;
 import cc.ivera.magnet.domain.common.ErrorCodes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -24,13 +25,15 @@ import java.util.regex.Pattern;
 
 /**
  * HTTP/HTTPS 直链资源探活与元数据提取服务（规格 §4.2）。
- * 支持可选的 HTTP 代理（magnet.http.proxy，格式 host:port），用于直连不通的境外资源。
+ * 支持可选的 HTTP 代理（magnet.http.proxy，格式 host:port 或 http://host:port），用于直连不通的境外资源。
+ * 未显式配置时自动回退检查系统环境变量 MAGNET_HTTP_PROXY / HTTPS_PROXY / HTTP_PROXY。
  */
 @Service
 public class HttpProbeService {
 
     private static final Logger log = LoggerFactory.getLogger(HttpProbeService.class);
-    private static final Duration PROBE_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration PROBE_TIMEOUT = Duration.ofSeconds(15);
+    private static final String DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 MagnetPlatform/1.0";
     private static final Pattern FILENAME_STAR_PATTERN = Pattern.compile("filename\\*=(?:UTF-8''|utf-8'')?([^;\\r\\n]+)", Pattern.CASE_INSENSITIVE);
     private static final Pattern FILENAME_PATTERN = Pattern.compile("filename=\"?([^\"\\r\\n;]+)\"?", Pattern.CASE_INSENSITIVE);
     private static final Pattern CONTENT_RANGE_PATTERN = Pattern.compile("bytes\\s+\\d+-\\d+/(\\d+)", Pattern.CASE_INSENSITIVE);
@@ -41,6 +44,7 @@ public class HttpProbeService {
         this("");
     }
 
+    @Autowired
     public HttpProbeService(@Value("${magnet.http.proxy:}") String proxy) {
         this.httpClient = buildClient(proxy);
     }
@@ -53,15 +57,46 @@ public class HttpProbeService {
         HttpClient.Builder b = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .connectTimeout(PROBE_TIMEOUT);
+
+        if (proxy == null || proxy.isBlank()) {
+            proxy = System.getenv("MAGNET_HTTP_PROXY");
+        }
+        if (proxy == null || proxy.isBlank()) {
+            proxy = System.getenv("HTTPS_PROXY");
+        }
+        if (proxy == null || proxy.isBlank()) {
+            proxy = System.getenv("HTTP_PROXY");
+        }
+        if (proxy == null || proxy.isBlank()) {
+            proxy = System.getenv("https_proxy");
+        }
+        if (proxy == null || proxy.isBlank()) {
+            proxy = System.getenv("http_proxy");
+        }
+
         if (proxy != null && !proxy.isBlank()) {
-            int idx = proxy.lastIndexOf(':');
+            String clean = proxy.trim();
+            if (clean.startsWith("http://")) {
+                clean = clean.substring(7);
+            } else if (clean.startsWith("https://")) {
+                clean = clean.substring(8);
+            }
+            int slashIdx = clean.indexOf('/');
+            if (slashIdx >= 0) {
+                clean = clean.substring(0, slashIdx);
+            }
+            int idx = clean.lastIndexOf(':');
             if (idx > 0) {
-                String host = proxy.substring(0, idx).trim();
-                int port = Integer.parseInt(proxy.substring(idx + 1).trim());
-                b.proxy(ProxySelector.of(new InetSocketAddress(host, port)));
-                log.info("[http-probe] 启用 HTTP 代理 {}:{}", host, port);
+                try {
+                    String host = clean.substring(0, idx).trim();
+                    int port = Integer.parseInt(clean.substring(idx + 1).trim());
+                    b.proxy(ProxySelector.of(new InetSocketAddress(host, port)));
+                    log.info("[http-probe] 启用 HTTP 代理 {}:{}", host, port);
+                } catch (Exception e) {
+                    log.warn("[http-probe] 代理配置端口解析失败: {}, 忽略: {}", clean, e.getMessage());
+                }
             } else {
-                log.warn("[http-probe] 代理配置格式错误（应为 host:port），忽略: {}", proxy);
+                log.warn("[http-probe] 代理配置格式错误（应为 host:port 或 http://host:port），忽略: {}", proxy);
             }
         }
         return b.build();
@@ -90,6 +125,7 @@ public class HttpProbeService {
             HttpRequest headReq = HttpRequest.newBuilder()
                     .uri(uri)
                     .timeout(PROBE_TIMEOUT)
+                    .header("User-Agent", DEFAULT_USER_AGENT)
                     .method("HEAD", HttpRequest.BodyPublishers.noBody())
                     .build();
 
@@ -104,6 +140,7 @@ public class HttpProbeService {
                 HttpRequest rangeReq = HttpRequest.newBuilder()
                         .uri(uri)
                         .timeout(PROBE_TIMEOUT)
+                        .header("User-Agent", DEFAULT_USER_AGENT)
                         .header("Range", "bytes=0-0")
                         .GET()
                         .build();

@@ -1,5 +1,22 @@
 # ISSUE.md — 已知问题与技术债
 
+## ✅ 已修复 | HTTP 资源解析探活因代理未生效触发 HTTP connect timed out
+- **发现日期**: 2026-10-23
+- **严重级**: 高
+- **现象**: 提交境外或 CDN 直链（如 `https://w.wallhaven.cc/full/4d/wallhaven-4d9gwl.png`）解析时报错 `[http-probe] 网络异常 ... HTTP connect timed out`，任务解析失败。
+- **复现**: 在直连受限网络环境下，调用 `POST /api/v1/parses` 提交 wallhaven 资源 URL。
+- **根因**:
+  1. `HttpProbeService` 提供了无参构造函数和带 `@Value("${magnet.http.proxy:}")` 的重载构造函数，但未在带参构造函数上显式标注 `@Autowired`，Spring 容器优先选择无参构造函数，导致注入代理配置失效（被当做空字符串）；
+  2. 代理字符串解析未清洗 `http://` 协议前缀，当配置为 URI 格式（如 `http://127.0.0.1:10808`）时，`new InetSocketAddress` 将 `http://127.0.0.1` 视为非法域名；
+  3. 未在无显式配置时自动回退检查环境变量（`MAGNET_HTTP_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`）；
+  4. 默认探活超时时间仅 5 秒，对于跨境 CDN 代理握手极易产生抖动超时，且未携带模拟浏览器的 User-Agent 标头。
+- **修复**:
+  1. 在 `HttpProbeService(@Value("${magnet.http.proxy:}") String proxy)` 上标注 `@Autowired`；
+  2. 增加对 `http://` / `https://` 及尾部路径的清洗，并自动回退检查系统环境变量代理；
+  3. 探测超时时间由 5 秒提升至 15 秒，请求头补充现代浏览器 User-Agent；
+  4. 执行 `mvn install` 将最新应用层模块持久化安装至本地 Maven 仓库。
+- **验证**: 提交 `https://w.wallhaven.cc/full/4d/wallhaven-4d9gwl.png` 解析，日志成功输出 `[http-probe] 启用 HTTP 代理 127.0.0.1:10808`，解析任务在 2 秒内状态流转为 `READY` 并准确识别文件名及字节数（1357039 字节）；后续创建下载任务并在 4 秒内成功完成下载与两轮校验达到 `COMPLETED` 100%。
+
 ## ✅ 已修复 | Grafana 大盘 Workers & Errors 面板缺少指标显示 No data
 - **发现日期**: 2026-10-23
 - **严重级**: 中
