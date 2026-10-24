@@ -9,3 +9,5 @@ data/
 *.iml
 .DS_Store
 .codex/
+infra/.secrets/
+.secrets/

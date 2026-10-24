@@ -233,3 +233,41 @@ docker build -t magnet-libtorrent-worker:ha-test native
 python -m pip install grpcio grpcio-tools
 python native/tests/test_ha.py
 ```
+
+
+## 七、P7 监控与 Grafana 观测大盘
+
+系统提供生产级低基数可观测性指标（通过 Prometheus 端点暴露）并预置了 Grafana 大盘（`Magnet Platform Overview`）。
+
+### 1. 配置抓取凭据（Basic Auth）
+
+API 的 `/actuator/prometheus` 端点受专用 HTTP Basic Auth 保护（用户名为 `prometheus`）。
+本地开发或生产部署前，必须在 Git 忽略的路径 `infra/.secrets/prometheus-scrape-password` 下创建强密码文件：
+
+```powershell
+# 创建目录（若不存在）并写入随机密码（请替换为自己的强密码）
+New-Item -ItemType Directory -Force -Path infra/.secrets
+Set-Content -Path infra/.secrets/prometheus-scrape-password -Value "your-strong-random-scrape-password" -NoNewline
+```
+
+该密码文件路径通过 `.env` 或环境变量 `MAGNET_METRICS_SCRAPE_PASSWORD_FILE` 提供给 API 进程；Prometheus 容器以只读方式挂载同一文件。
+密码文件已被 `.gitignore` 排除，**严禁将包含真实密码的文件提交至版本库**。
+
+### 2. 启动监控栈（Prometheus & Grafana）
+
+监控组件归属于可选的 `monitoring` profile，默认 `docker compose up -d` 不会启动它们，不影响现有轻量开发流程。
+
+```powershell
+# 仅启动 Prometheus 与 Grafana
+docker compose -f infra/docker-compose.yml --profile monitoring up -d prometheus grafana
+
+# 或与基础依赖（MySQL、Redis、Worker）一并启动
+docker compose -f infra/docker-compose.yml --profile monitoring up -d
+```
+
+### 3. 访问服务
+
+- **Prometheus UI**：`http://localhost:9090`（目标 `host.docker.internal:8080/actuator/prometheus`）
+- **Grafana 观测大盘**：`http://localhost:3000`
+  - 默认登录账户：用户名 `admin`，密码 `admin`（可通过环境变量 `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` 覆盖）
+  - 已自动 Provision 数据源（Prometheus）与大盘（`Magnet Platform Overview`），进入 Dashboards 即可查看平台健康度、活跃任务/会话数、吞吐速率、调度耗时、错误分布及各阶段（解析、导出、GC、SSE）运行指标。
