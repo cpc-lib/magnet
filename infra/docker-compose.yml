@@ -81,7 +81,7 @@ services:
     command:
       - |
         : "$${MAGNET_ARIA2_RPC_SECRET:?Set MAGNET_ARIA2_RPC_SECRET before starting aria2}"
-        exec aria2c --enable-rpc=true --rpc-listen-all=true --rpc-secret="$${MAGNET_ARIA2_RPC_SECRET}" --dir=/data --continue=true --auto-save-interval=1 --file-allocation=none --enable-dht=false --enable-peer-exchange=false
+        exec aria2c --enable-rpc=true --rpc-listen-all=true --rpc-secret="$${MAGNET_ARIA2_RPC_SECRET}" --dir=/data --continue=true --auto-save-interval=1 --file-allocation=none --enable-dht=false --enable-peer-exchange=false --max-connection-per-server=8 --min-split-size=1M --disk-cache=32M
     ports:
       - "127.0.0.1:6800:6800"
     volumes:

@@ -271,3 +271,27 @@ docker compose -f infra/docker-compose.yml --profile monitoring up -d
 - **Grafana 观测大盘**：`http://localhost:3000`
   - 默认登录账户：用户名 `admin`，密码 `admin`（可通过环境变量 `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` 覆盖）
   - 已自动 Provision 数据源（Prometheus）与大盘（`Magnet Platform Overview`），进入 Dashboards 即可查看平台健康度、活跃任务/会话数、吞吐速率、调度耗时、错误分布及各阶段（解析、导出、GC、SSE）运行指标。
+
+---
+
+## 八、P7.2 全链路吞吐压测与性能基准
+
+项目提供全自动、高吞吐的本地受控压测套件，不依赖公网不可控网络：
+
+### 1. 启动本地高吞吐测试源
+
+```powershell
+python benchmarks/test_http_server.py --port 18080
+```
+
+测试源提供 RFC 7233 范围请求分片下载、动态合成二进制文件与极低延迟健康端点。
+
+### 2. 运行自动化全链路压测套件
+
+在另一个终端执行（测试套件将自动生成测试账号、执行解析与并发任务创建、监测调度饱和与执行海量 SSE 长连接订阅）：
+
+```powershell
+python benchmarks/run_benchmark.py --tasks 40 --concurrency 10 --sse-clients 30 --output benchmarks/results/benchmark_run.json
+```
+
+生成的性能分析与对比报告见 `benchmarks/results/optimized_report.md`。

@@ -248,7 +248,12 @@ class TaskServiceTest {
             resumed = true;
         }
 
+        public java.util.function.Function<String, EngineSnapshot> snapshotFn;
+
         public EngineSnapshot snapshot(String engineSessionId) {
+            if (snapshotFn != null) {
+                return snapshotFn.apply(engineSessionId);
+            }
             return snapshot;
         }
 
@@ -1037,5 +1042,59 @@ class TaskServiceTest {
     private static void assertCode(String code, Executable executable) {
         DomainException e = assertThrows(DomainException.class, executable);
         assertEquals(code, e.code(), e::getMessage);
+    }
+
+    @Test
+    void slowOrStuckSnapshotDoesNotBlockOtherSessionsOrSchedulerTick() {
+        LocalDateTime now = LocalDateTime.now();
+        resources.update(new TorrentResource(resourceId, "btih:abc", new byte[20], null,
+                VersionType.V1, "demo", 16384L, 150L, false, "TORRENT", List.of(), 2,
+                now, torrentStorage.path));
+
+        UUID resB = UUID.randomUUID();
+        resources.insert(new TorrentResource(resB, "btih:fast-b", new byte[20], null,
+                VersionType.V1, "demoB", 16384L, 100L, false, "TORRENT", List.of(), 1,
+                now, torrentStorage.path));
+        resources.insertFiles(resB, List.of(new TorrentFileInfo(0, "b.bin", 100L, null)));
+
+        UUID parseB = UUID.randomUUID();
+        parseJobs.insert(new ParseJob(parseB, alice, resB, InputType.TORRENT, null,
+                "b.torrent", "/b", "b", ParseStatus.READY, null, null, 0L, now, now));
+
+        DownloadTask taskA = service.create(alice, parseId, List.of(0), null, true, 0);
+        DownloadTask taskB = service.create(alice, parseB, List.of(0), null, true, 0);
+
+        RecordingEngine engine = new RecordingEngine();
+        engine.snapshotFn = sessionId -> {
+            if (sessionId.equals(resourceId.toString())) {
+                try {
+                    Thread.sleep(1500); // 超过 1000ms 超时熔断阈值
+                } catch (InterruptedException ignored) {}
+                return new EngineSnapshot(sessionId, SessionState.ACTIVE, true,
+                        50L, 0L, 0L, 0, List.of(50L, 0L));
+            } else {
+                return new EngineSnapshot(sessionId, SessionState.ACTIVE, true,
+                        100L, 0L, 0L, 0, List.of(100L));
+            }
+        };
+
+        service = new TaskService(tasks, events, sessions, parseJobs, resources,
+                torrentStorage, downloadStorage, List.of(engine), "local-worker-1", 30);
+
+        long start = System.currentTimeMillis();
+        // 第一次 tick：QUEUED -> STARTING -> DOWNLOADING
+        service.dispatchTick(10);
+        // 第二次 tick：会触发快照拉取与超时熔断，resB 完成两轮核查变为 COMPLETED
+        service.dispatchTick(10);
+        long elapsed = System.currentTimeMillis() - start;
+
+        assertTrue(elapsed < 4000, "调度总耗时应受超时熔断保护，实际: " + elapsed + "ms");
+
+        DownloadTask currentA = tasks.findById(taskA.getId()).orElseThrow();
+        assertEquals(TaskStatus.DOWNLOADING, currentA.getStatus());
+
+        DownloadTask currentB = tasks.findById(taskB.getId()).orElseThrow();
+        assertEquals(TaskStatus.COMPLETED, currentB.getStatus());
+        assertEquals(100L, currentB.getVerifiedBytes());
     }
 }

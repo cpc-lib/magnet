@@ -31,6 +31,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -50,7 +54,7 @@ import java.util.stream.Collectors;
  * 共享会话在有其他活跃任务时保持运行（ADR-003）。
  */
 @Service
-public class TaskService {
+public class TaskService implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(TaskService.class);
 
@@ -66,6 +70,23 @@ public class TaskService {
     private final String workerId;
     private final int leaseSeconds;
     private final Map<UUID, SessionState> attachedResources = new HashMap<>();
+    private final ExecutorService snapshotExecutor = Executors.newVirtualThreadPerTaskExecutor();
+
+    private record SessionTickPlan(
+            EngineSessionRecord session,
+            DownloadEngine engine,
+            String engineType,
+            UUID resourceId,
+            String sessionId,
+            boolean wasIdle,
+            Set<Integer> demand
+    ) {}
+
+    private record SessionTickResult(
+            SessionTickPlan plan,
+            EngineSnapshot snapshot,
+            Throwable error
+    ) {}
 
     @Autowired
     public TaskService(DownloadTaskRepository tasks,
@@ -351,13 +372,16 @@ public class TaskService {
     }
 
     /** 需求并集下发 + 按文件精确对账进度 + 完成判定 + 共享会话生命周期（规格 §4.3/§5.1/§5.3/§7）。
-     * 以会话为驱动单元：即使某资源无活跃任务，也需在无需求时暂停会话并落盘 resume。 */
+     * 以会话为驱动单元：即使某资源无活跃任务，也需在无需求时暂停会话并落盘 resume。
+     * 性能优化：会话续租与快照拉取 RPC 并发执行并增加超时熔断，状态机与数据库推进统一在主线程保证原子性。 */
     public void pushDemandAndRefreshProgress() {
         LocalDateTime now = LocalDateTime.now();
         // 活跃任务：含 DOWNLOADING/VERIFYING 用于刷进度，也包含 REPAIRING 以便重新入队后对账
         Map<UUID, List<DownloadTask>> activesByResource = tasks.findByStatuses(
                 List.of(TaskStatus.DOWNLOADING, TaskStatus.VERIFYING, TaskStatus.REPAIRING), 500).stream()
                 .collect(Collectors.groupingBy(DownloadTask::getResourceId));
+
+        List<SessionTickPlan> plans = new ArrayList<>();
 
         for (EngineSessionRecord session : sessions.findRecoverable()) {
             UUID resourceId = session.getResourceId();
@@ -378,8 +402,6 @@ public class TaskService {
                 continue;
             }
             session = freshLease(session);
-            engine.renewLease(resourceId.toString(), session.getOwnerEpoch(),
-                    session.getLeaseUntil().toInstant(java.time.ZoneOffset.UTC));
             Set<Integer> demand = demandUnion(resourceId);
             String sessionId = session.getId().toString();
 
@@ -391,14 +413,54 @@ public class TaskService {
                 }
                 continue;
             }
-            if ("IDLE".equals(session.getState())) {
-                engine.resumeSession(sessionId);
+            boolean wasIdle = "IDLE".equals(session.getState());
+            plans.add(new SessionTickPlan(session, engine, engineType, resourceId, sessionId, wasIdle, demand));
+        }
+
+        if (plans.isEmpty()) {
+            return;
+        }
+
+        // 并发执行会话的 RPC 续租、恢复、需求下发与快照拉取（带超时熔断保护，防止单个引擎卡死阻塞调度）
+        List<CompletableFuture<SessionTickResult>> futures = plans.stream()
+                .map(plan -> CompletableFuture.supplyAsync(() -> {
+                    try {
+                        plan.engine().renewLease(plan.resourceId().toString(), plan.session().getOwnerEpoch(),
+                                plan.session().getLeaseUntil().toInstant(java.time.ZoneOffset.UTC));
+                        if (plan.wasIdle()) {
+                            plan.engine().resumeSession(plan.sessionId());
+                        }
+                        plan.engine().setDemand(plan.sessionId(), plan.demand());
+                        EngineSnapshot snap = plan.engine().snapshot(plan.sessionId());
+                        return new SessionTickResult(plan, snap, null);
+                    } catch (Throwable t) {
+                        return new SessionTickResult(plan, null, t);
+                    }
+                }, snapshotExecutor)
+                .orTimeout(1000, TimeUnit.MILLISECONDS)
+                .exceptionally(ex -> new SessionTickResult(plan, null, ex)))
+                .toList();
+
+        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+
+        // 统一在主线程按 CAS 和租约语义更新状态机和对账任务进度
+        for (CompletableFuture<SessionTickResult> future : futures) {
+            SessionTickResult result = future.join();
+            SessionTickPlan plan = result.plan();
+            if (result.error() != null || result.snapshot() == null) {
+                log.warn("会话快照拉取失败或超时 resource={}: {}", plan.resourceId(),
+                        result.error() != null ? result.error().getMessage() : "timeout");
+                continue;
+            }
+
+            EngineSnapshot snap = result.snapshot();
+            EngineSessionRecord session = plan.session();
+            if (plan.wasIdle()) {
                 updateSessionState(session, SessionState.ACTIVE.name(), now);
                 session = freshLease(session);
             }
-            engine.setDemand(sessionId, demand);
-            EngineSnapshot snap = engine.snapshot(sessionId);
-            metrics.recordSessionSnapshot(sessionId, com.magnetplatform.spi.EngineKind.valueOf(engineType), snap);
+
+            metrics.recordSessionSnapshot(plan.sessionId(), com.magnetplatform.spi.EngineKind.valueOf(plan.engineType()), snap);
             // FAILED 是引擎结果；控制面保留可续租状态以处理任务失败、显式重试和 GC。
             updateSessionState(session, snap.state() == SessionState.FAILED
                     ? SessionState.ACTIVE.name() : snap.state().name(), now);
@@ -407,6 +469,7 @@ public class TaskService {
             }
 
             EngineSessionRecord owned = session;
+            UUID resourceId = plan.resourceId();
             sessions.withLease(owned, () -> {
                 if (snap.state() == SessionState.FAILED) {
                     for (DownloadTask task : activesByResource.getOrDefault(resourceId, List.of())) {
@@ -469,6 +532,7 @@ public class TaskService {
             });
         }
     }
+
 
     /** 无需求时保存 resume 并暂停共享会话（规格 §12.1：先落盘临时文件 fsync 原子 rename）。 */
     private void persistResumeAndPause(DownloadEngine engine, EngineSessionRecord session,
@@ -677,5 +741,10 @@ public class TaskService {
             parts.add(com.magnetplatform.domain.torrent.PathSanitizer.sanitizeComponent(part));
         }
         return String.join("/", parts);
+    }
+
+    @Override
+    public void close() {
+        snapshotExecutor.shutdown();
     }
 }

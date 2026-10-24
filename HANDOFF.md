@@ -35,6 +35,7 @@
 | P5 跨主机 | 未实现，需共享存储 fencing 方案 | 不宣称已交付 |
 | P6 多协议与 aria2 引擎 | HTTP/HTTPS 直链探活解析、分段下载、断点续传、aria2 JSON-RPC 2.0 引擎协议接入、单会话共享与统一 CAS 状态机 | `Aria2ClientTest`、`Aria2JsonRpcEngineTest`、`HttpProbeServiceTest`、`ParseServiceTest`、`TaskServiceTest`、`ApiIntegrationTest.httpUrlParseAndDownloadLifecycleWithAria2Engine` |
 | P7 监控与 Grafana 观测大盘 | 低基数 Prometheus 抓取端点（专用 Basic Auth 隔离与 fail-closed 密码文件）、Grafana 大盘 Provision（`Magnet Platform Overview`：健康优先首屏、任务分布、速率、耗时、Worker 与错误分布）、`monitoring` Compose profile | `MetricsEndpointIntegrationTest`、`MonitoringMetricsTest`、`docker compose -f infra/docker-compose.yml --profile monitoring config`、Prometheus `http://localhost:9090/-/ready`、Grafana `http://localhost:3000/api/health` 且数据源与大盘自动加载 |
+| P7.2 吞吐压测与性能调优 | 本地受控测试源、自动化压测驱动套件（爆发创建/调度饱和/海量并发 SSE）、会话快照与 RPC 虚拟线程并发拉取与超时熔断、HikariCP 连接池与 aria2 下载并发调优 | `python benchmarks/run_benchmark.py --tasks 40 --concurrency 10 --sse-clients 30`、`TaskServiceTest.slowOrStuckSnapshotDoesNotBlockOtherSessionsOrSchedulerTick`、全量 `mvn test` 174 项全绿 |
 
 ## 本轮验证记录
 
@@ -129,6 +130,7 @@ python native/tests/test_ha.py
 19. Prometheus 抓取凭据与业务 JWT 严格隔离：暴露 `/actuator/prometheus`，采用专用 `@Order(1)` 过滤链及独立 Basic Auth 账号（`prometheus`），业务 JWT 链保持 `@Order(2)`；密码通过本地受忽略文件 `infra/.secrets/prometheus-scrape-password`（只读挂载至 Prometheus 容器）载入，不接受明文写死与环境变量注入泄漏。
 20. 监控安全 Fail-Closed 保证：`MetricsUserDetailsService` 在密码文件缺失或为空时，自动生成不可预测的高强度随机密码锁定端点，确保在任何未配置测试或意外环境下均拒绝未授权访问（返回 401），且不会破坏无需指标的单测/切片测试上下文。
 21. 低基数监控与单会话吞吐计量：全量指标遵循低基数原则，标签仅保留受控枚举（engine、status、result、reason、error_type），禁止任何任务 ID、用户 ID、URL 等高基数维度；下载/上传速率严格基于底层引擎会话聚合（多个任务共享同资源时仅单次采集），禁止将单物理流吞吐倍乘。
+22. 调度器快照并发获取与超时熔断：将 tick 中对底层下载引擎的 RPC（renewLease、setDemand、snapshot）改造为三阶段模型。阶段 1 内存筛选待处理会话；阶段 2 采用虚拟线程并发向引擎发送 RPC 并设置 1000ms 超时熔断（防止单个卡死/慢引擎拖垮整个调度周期）；阶段 3 统一由主线程按 CAS 和租约更新任务进度与状态机，兼顾并发吞吐与严格事务安全。
 
 ## 部署与边界
 

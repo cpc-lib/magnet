@@ -1,5 +1,14 @@
 # ISSUE.md — 已知问题与技术债
 
+## ✅ 已修复 | 调度 tick 串行获取快照导致高并发时调度抖动与任务延迟完成
+- **发现日期**: 2026-10-23
+- **严重级**: 中
+- **现象**: 压测基准中当存在 40 个活跃下载任务时，单次调度 tick 耗时逼近 2 秒（p95 达 1418ms），60 秒限时内仅能完成 31 个任务，剩余 9 个任务由于调度网络 I/O 累加未能及时完成。
+- **复现**: `python benchmarks/run_benchmark.py --tasks 40 --concurrency 10`
+- **根因**: `TaskService.pushDemandAndRefreshProgress` 对所有活跃会话顺序执行同步网络 RPC（`renewLease`、`setDemand`、`snapshot`），网络 RTT 串行累加；且单个慢会话可能拖垮整个调度周期。
+- **修复**: 将会话快照与 RPC 拉取解耦为虚拟线程并发模型，并设置 1000ms 超时熔断保护，状态机流转与 DB CAS 保持在调度主线程原子推进；调优 HikariCP 最大连接数至 25，aria2 增加分片并发与磁盘缓存参数。
+- **验证**: `benchmarks/results/optimized_report.md`：40/40 任务全部成功在 49.81 秒内完成（完成率由 77.5% 跃升至 100%），`mvn test` 174 项全绿，单测包含 `slowOrStuckSnapshotDoesNotBlockOtherSessionsOrSchedulerTick` 超时熔断验证。
+
 ## ✅ 已修复 | Compose 环境变量语法错误导致容器启动崩溃 (invalid interpolation format)
 - **发现日期**: 2026-10-23
 - **严重级**: 高
