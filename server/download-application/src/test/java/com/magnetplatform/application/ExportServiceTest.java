@@ -83,6 +83,10 @@ class ExportServiceTest {
             return true;
         }
 
+        public List<TaskStatusEngineCount> countByStatusAndEngine() {
+            return List.of();
+        }
+
         public void updateFileProgress(UUID taskId, int fileIndex, long verifiedBytes) {
         }
 

@@ -35,4 +35,7 @@ public interface DownloadTaskRepository {
 
     /** 资源下未删除任务数（GC 判定：为 0 才允许回收共享数据，规格 §10.2） */
     long countNonDeletedByResource(UUID resourceId);
+
+    /** 监控：按任务状态和引擎类型聚合当前未删除任务数（P7.1） */
+    List<com.magnetplatform.application.TaskStatusEngineCount> countByStatusAndEngine();
 }

@@ -116,4 +116,23 @@
         SELECT COUNT(*) FROM download_task
         WHERE resource_id = #{resourceId} AND deleted_at IS NULL
     </select>
+
+    <resultMap id="taskStatusEngineCount" type="com.magnetplatform.application.TaskStatusEngineCount">
+        <constructor>
+            <arg column="status" javaType="com.magnetplatform.domain.task.TaskStatus"/>
+            <arg column="engine_type" javaType="com.magnetplatform.spi.EngineKind"/>
+            <arg column="task_count" javaType="long"/>
+        </constructor>
+    </resultMap>
+
+    <select id="countByStatusAndEngine" resultMap="taskStatusEngineCount">
+        SELECT t.status,
+               CASE WHEN r.version_type = 'HTTP' THEN 'ARIA2'
+                    ELSE 'LIBTORRENT' END AS engine_type,
+               COUNT(*) AS task_count
+        FROM download_task t
+        JOIN torrent_resource r ON r.id = t.resource_id
+        WHERE t.deleted_at IS NULL
+        GROUP BY t.status, engine_type
+    </select>
 </mapper>

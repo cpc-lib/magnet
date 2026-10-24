@@ -71,4 +71,9 @@ public class MyBatisDownloadTaskRepository implements DownloadTaskRepository {
     public long countNonDeletedByResource(UUID resourceId) {
         return mapper.countNonDeletedByResource(resourceId);
     }
+
+    @Override
+    public List<com.magnetplatform.application.TaskStatusEngineCount> countByStatusAndEngine() {
+        return mapper.countByStatusAndEngine();
+    }
 }

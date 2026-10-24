@@ -23,6 +23,7 @@ import com.magnetplatform.spi.DownloadEngine;
 import com.magnetplatform.spi.EngineKind;
 import com.magnetplatform.spi.EngineOptions;
 import com.magnetplatform.spi.ResourceDescriptor;
+import io.micrometer.core.annotation.Timed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -85,6 +86,7 @@ public class ParseService {
     }
 
     @Transactional
+    @Timed(value = "magnet_parse_duration_seconds", histogram = true)
     public ParseJob submitUri(UUID userId, String uri) {
         if (uri == null || uri.isBlank()) {
             throw new DomainException(ErrorCodes.VALIDATION, "链接不能为空");
@@ -168,6 +170,7 @@ public class ParseService {
     }
 
     @Transactional
+    @Timed(value = "magnet_parse_duration_seconds", histogram = true)
     public ParseJob submitTorrent(UUID userId, String filename, byte[] bytes) {
         consumeQuota(userId);
         if (bytes == null || bytes.length == 0) {
@@ -189,6 +192,7 @@ public class ParseService {
 
     /** 仅 FAILED / TIMEOUT 可重试；Magnet 重新下发解析，torrent 重新读取已存字节 */
     @Transactional
+    @Timed(value = "magnet_parse_duration_seconds", histogram = true)
     public ParseJob retry(UUID actorId, boolean admin, UUID jobId) {
         ParseJob job = getOwned(actorId, admin, jobId);
         if (job.getStatus() != ParseStatus.FAILED && job.getStatus() != ParseStatus.TIMEOUT) {
@@ -254,6 +258,7 @@ public class ParseService {
 
     /** 调度器调用：超时的 RESOLVING 任务置为 TIMEOUT */
     @Transactional
+    @Timed(value = "magnet_parse_duration_seconds", histogram = true)
     public int sweepTimeouts() {
         return parseJobs.markTimeoutResolving(LocalDateTime.now().minusSeconds(properties.timeoutSeconds()));
     }

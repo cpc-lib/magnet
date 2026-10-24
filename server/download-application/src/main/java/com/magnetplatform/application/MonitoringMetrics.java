@@ -23,10 +23,21 @@ public final class MonitoringMetrics {
     private final Map<EngineKind, AtomicLong> uploadRates = new EnumMap<>(EngineKind.class);
     private final Map<EngineKind, AtomicLong> peers = new EnumMap<>(EngineKind.class);
     private final Map<String, AtomicLong> sessionCounts = new HashMap<>();
+    private final AtomicLong sseConnections = new AtomicLong();
 
     public MonitoringMetrics(MeterRegistry registry) {
         this.registry = registry;
         registerStableGauges();
+    }
+
+    public MeterRegistry getRegistry() {
+        return registry;
+    }
+
+    public synchronized void clearSession(String sessionId) {
+        if (sessions.remove(sessionId) != null) {
+            refreshSessionGauges();
+        }
     }
 
     public synchronized void recordSessionSnapshot(
@@ -57,6 +68,21 @@ public final class MonitoringMetrics {
                 .increment();
     }
 
+    public void incrementSseConnections() {
+        sseConnections.incrementAndGet();
+    }
+
+    public void decrementSseConnections() {
+        sseConnections.decrementAndGet();
+    }
+
+    public void recordSseDisconnect(String reason) {
+        Counter.builder("magnet_sse_disconnects_total")
+                .tag("reason", reason)
+                .register(registry)
+                .increment();
+    }
+
     private void registerStableGauges() {
         for (EngineKind engine : EngineKind.values()) {
             AtomicLong downloadRate = new AtomicLong();
@@ -82,6 +108,8 @@ public final class MonitoringMetrics {
                         .register(registry);
             }
         }
+        Gauge.builder("magnet_sse_connections", sseConnections, AtomicLong::doubleValue)
+                .register(registry);
     }
 
     private void refreshSessionGauges() {

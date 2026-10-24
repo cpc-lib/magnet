@@ -8,6 +8,7 @@ import com.magnetplatform.application.port.ResourceGcRepository;
 import com.magnetplatform.domain.task.EngineSessionRecord;
 import com.magnetplatform.spi.DownloadEngine;
 import com.magnetplatform.spi.EngineKind;
+import io.micrometer.core.annotation.Timed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -60,6 +61,7 @@ public class ReferenceGcService {
 
     /** 扫描有会话的资源，对无引用者标记 GC 候选（宽限期后才真正删除）。 */
     @Transactional
+    @Timed(value = "magnet_gc_duration_seconds", histogram = true)
     public void markCandidates() {
         LocalDateTime now = LocalDateTime.now();
         for (EngineSessionRecord session : sessions.findRecoverable()) {
@@ -76,6 +78,7 @@ public class ReferenceGcService {
     }
 
     /** 清扫到期候选：复核无引用后删除引擎会话与物理数据（规格 §10.2 容错：异常保留候选待下次）。 */
+    @Timed(value = "magnet_gc_duration_seconds", histogram = true)
     public void sweep() {
         LocalDateTime now = LocalDateTime.now();
         for (UUID resourceId : gc.findDue(now, 50)) {

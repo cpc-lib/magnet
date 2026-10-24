@@ -13,6 +13,7 @@ import com.magnetplatform.domain.task.DownloadTask;
 import com.magnetplatform.domain.task.DownloadTaskFile;
 import com.magnetplatform.domain.task.TaskStatus;
 import com.magnetplatform.domain.torrent.PathSanitizer;
+import io.micrometer.core.annotation.Timed;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,6 +52,7 @@ public class ExportService {
     }
 
     @Transactional
+    @Timed(value = "magnet_export_duration_seconds", histogram = true)
     public List<FileExport> materializeCompleted(DownloadTask task) {
         DownloadTask reloaded = tasks.findById(task.getId())
                 .filter(t -> t.getStatus() != TaskStatus.DELETED)

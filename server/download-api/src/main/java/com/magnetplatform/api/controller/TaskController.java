@@ -7,6 +7,7 @@ import com.magnetplatform.api.dto.Dtos.TaskEventView;
 import com.magnetplatform.api.dto.Dtos.TaskFileView;
 import com.magnetplatform.api.dto.Dtos.TaskView;
 import com.magnetplatform.application.ExportService;
+import com.magnetplatform.application.MonitoringMetrics;
 import com.magnetplatform.application.JwtPrincipal;
 import com.magnetplatform.application.Page;
 import com.magnetplatform.application.TaskService;
@@ -44,11 +45,13 @@ public class TaskController {
 
     private final TaskService taskService;
     private final ExportService exportService;
+    private final MonitoringMetrics metrics;
     private final ExecutorService sseExecutor = Executors.newCachedThreadPool();
 
-    public TaskController(TaskService taskService, ExportService exportService) {
+    public TaskController(TaskService taskService, ExportService exportService, MonitoringMetrics metrics) {
         this.taskService = taskService;
         this.exportService = exportService;
+        this.metrics = metrics;
     }
 
     @PostMapping
@@ -130,10 +133,22 @@ public class TaskController {
                              @RequestParam(defaultValue = "0") long afterSeq) {
         JwtPrincipal caller = principal(auth);
         SseEmitter emitter = new SseEmitter(0L);
+        metrics.incrementSseConnections();
         java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean(false);
-        emitter.onCompletion(() -> closed.set(true));
-        emitter.onTimeout(() -> closed.set(true));
-        emitter.onError(t -> closed.set(true));
+        Runnable closeAction = () -> {
+            if (closed.compareAndSet(false, true)) {
+                metrics.decrementSseConnections();
+            }
+        };
+        emitter.onCompletion(closeAction);
+        emitter.onTimeout(() -> {
+            metrics.recordSseDisconnect("timeout");
+            closeAction.run();
+        });
+        emitter.onError(t -> {
+            metrics.recordSseDisconnect("error");
+            closeAction.run();
+        });
 
         sseExecutor.submit(() -> {
             long cursor = afterSeq;
@@ -157,7 +172,7 @@ public class TaskController {
                     emitter.send(SseEmitter.event().name("SNAPSHOT").data(snapshot));
                     if (snapshot.status().equals("COMPLETED") || snapshot.status().equals("FAILED")
                             || snapshot.status().equals("DELETED")) {
-                        closed.set(true);
+                        closeAction.run();
                         emitter.complete();
                         return;
                     }
@@ -165,27 +180,31 @@ public class TaskController {
                 }
             } catch (IOException e) {
                 // send 失败后的错误派发由 Servlet 容器负责，不能再调用 complete 竞争完成流。
-                closed.set(true);
+                metrics.recordSseDisconnect("client_disconnect");
+                closeAction.run();
             } catch (DomainException | IllegalStateException e) {
                 // 客户端切页、关闭浏览器或断开连接属于正常生命周期事件，安全结束无需抛异常
-                closed.set(true);
+                closeAction.run();
                 try {
                     emitter.complete();
                 } catch (Exception ignored) {
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                closed.set(true);
+                closeAction.run();
                 try {
                     emitter.complete();
                 } catch (Exception ignored) {
                 }
             } catch (Exception e) {
-                closed.set(true);
+                metrics.recordSseDisconnect("error");
+                closeAction.run();
                 try {
                     emitter.completeWithError(e);
                 } catch (Exception ignored) {
                 }
+            } finally {
+                closeAction.run();
             }
         });
         return emitter;

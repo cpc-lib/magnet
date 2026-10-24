@@ -1,5 +1,7 @@
 package com.magnetplatform.application;
 
+import java.util.stream.Collectors;
+
 import com.magnetplatform.application.port.DownloadTaskRepository;
 import com.magnetplatform.application.port.DownloadStorage;
 import com.magnetplatform.application.port.EngineSessionRepository;
@@ -109,6 +111,17 @@ class TaskServiceTest {
             }
             byId.put(task.getId(), task);
             return true;
+        }
+
+        public List<TaskStatusEngineCount> countByStatusAndEngine() {
+            return byId.values().stream()
+                    .filter(t -> t.getDeletedAt() == null)
+                    .collect(Collectors.groupingBy(
+                            DownloadTask::getStatus,
+                            Collectors.counting()))
+                    .entrySet().stream()
+                    .map(e -> new TaskStatusEngineCount(e.getKey(), EngineKind.LIBTORRENT, e.getValue()))
+                    .toList();
         }
 
         public void updateFileProgress(UUID taskId, int fileIndex, long verifiedBytes) {
@@ -683,7 +696,7 @@ class TaskServiceTest {
     void sharedSessionDemandUnionAcrossUsers() {
         RecordingEngine engine = new RecordingEngine();
         engine.snapshot = new EngineSnapshot("s", SessionState.ACTIVE, true,
-                0L, 0L, 0L, 0, List.of(0L, 0L));
+                0L, 80L, 10L, 4, List.of(0L, 0L));
         service = serviceWithEngine(engine);
 
         // Bob 也需要自己的解析记录（同一资源）
@@ -694,13 +707,21 @@ class TaskServiceTest {
 
         DownloadTask aliceTask = service.create(alice, parseId, List.of(0), null, true, null);
         DownloadTask bobTask = service.create(bob, bobParseId, List.of(1), null, true, null);
-        service.dispatchTick(1);
+        service.dispatchTick(3);
 
         assertEquals(TaskStatus.DOWNLOADING, tasks.findById(aliceTask.getId()).orElseThrow().getStatus());
         assertEquals(TaskStatus.DOWNLOADING, tasks.findById(bobTask.getId()).orElseThrow().getStatus());
         // 需求并集 = {0, 1}
         assertEquals(Set.of(0, 1), engine.lastDemand);
+
+        assertEquals(80D, service.getMetrics().getRegistry()
+                .get("magnet_engine_download_rate_bytes_per_second")
+                .tag("engine", "LIBTORRENT").gauge().value());
+        assertEquals(4D, service.getMetrics().getRegistry()
+                .get("magnet_engine_peers")
+                .tag("engine", "LIBTORRENT").gauge().value());
     }
+
 
     @Test
     void pauseOneUserKeepsSessionRunningForOther() {

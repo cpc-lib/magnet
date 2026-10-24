@@ -39,4 +39,6 @@ public interface DownloadTaskMapper {
                             @Param("verifiedBytes") long verifiedBytes);
 
     long countNonDeletedByResource(@Param("resourceId") UUID resourceId);
+
+    List<com.magnetplatform.application.TaskStatusEngineCount> countByStatusAndEngine();
 }

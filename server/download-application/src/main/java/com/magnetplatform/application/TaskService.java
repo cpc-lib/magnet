@@ -62,6 +62,7 @@ public class TaskService {
     private final TorrentStorage torrentStorage;
     private final DownloadStorage downloadStorage;
     private final List<DownloadEngine> engines;
+    private final MonitoringMetrics metrics;
     private final String workerId;
     private final int leaseSeconds;
     private final Map<UUID, SessionState> attachedResources = new HashMap<>();
@@ -75,6 +76,7 @@ public class TaskService {
                        TorrentStorage torrentStorage,
                        DownloadStorage downloadStorage,
                        List<DownloadEngine> engines,
+                       MonitoringMetrics metrics,
                        @Value("${magnet.worker.id:local-worker-1}") String workerId,
                        @Value("${magnet.worker.lease-seconds:30}") int leaseSeconds) {
         this.tasks = tasks;
@@ -85,8 +87,28 @@ public class TaskService {
         this.torrentStorage = torrentStorage;
         this.downloadStorage = downloadStorage;
         this.engines = engines;
+        this.metrics = metrics;
         this.workerId = workerId;
         this.leaseSeconds = leaseSeconds;
+    }
+
+    public TaskService(DownloadTaskRepository tasks,
+                       TaskEventRepository events,
+                       EngineSessionRepository sessions,
+                       ParseJobRepository parseJobs,
+                       TorrentResourceRepository resources,
+                       TorrentStorage torrentStorage,
+                       DownloadStorage downloadStorage,
+                       List<DownloadEngine> engines,
+                       String workerId,
+                       int leaseSeconds) {
+        this(tasks, events, sessions, parseJobs, resources, torrentStorage, downloadStorage, engines,
+                new MonitoringMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
+                workerId, leaseSeconds);
+    }
+
+    public MonitoringMetrics getMetrics() {
+        return metrics;
     }
 
     // ---------- 用户命令 ----------
@@ -228,6 +250,7 @@ public class TaskService {
 
     /** 扫描待调度任务：恢复会话、QUEUED 启动、PAUSING 收需求、RETRY_WAIT 重入队、活跃任务刷进度 */
     public synchronized void dispatchTick(int maxActivePerUser) {
+        metrics.refreshTaskCounts(tasks.countByStatusAndEngine());
         // 0. 重启恢复：重新挂载可恢复会话到引擎（规格 §12.1）
         recoverSessions();
         LocalDateTime now = LocalDateTime.now();
@@ -279,6 +302,7 @@ public class TaskService {
      * acquireLease（epoch 单调 +1）接管后重新挂载；物理互斥由 Worker 侧文件锁仲裁（ADR-006）。 */
     public synchronized void recoverSessions() {
         attachedResources.clear();
+        metrics.clearSessionSnapshots();
         LocalDateTime now = LocalDateTime.now();
         for (EngineSessionRecord session : sessions.findRecoverable()) {
             UUID resourceId = session.getResourceId();
@@ -350,6 +374,7 @@ public class TaskService {
             if (!sessions.renewLease(resourceId, engineType, workerId,
                     session.getOwnerEpoch(), leaseSeconds)) {
                 log.warn("需求下发前续租失败，本实例停写 resource={}", resourceId);
+                metrics.recordOperation("lease_renew", "failure", "CAS_FAILED");
                 continue;
             }
             session = freshLease(session);
@@ -362,6 +387,7 @@ public class TaskService {
             if (demand.isEmpty()) {
                 if (!"IDLE".equals(session.getState())) {
                     persistResumeAndPause(engine, session, resourceId, now);
+                    metrics.clearSession(sessionId);
                 }
                 continue;
             }
@@ -372,6 +398,7 @@ public class TaskService {
             }
             engine.setDemand(sessionId, demand);
             EngineSnapshot snap = engine.snapshot(sessionId);
+            metrics.recordSessionSnapshot(sessionId, com.magnetplatform.spi.EngineKind.valueOf(engineType), snap);
             // FAILED 是引擎结果；控制面保留可续租状态以处理任务失败、显式重试和 GC。
             updateSessionState(session, snap.state() == SessionState.FAILED
                     ? SessionState.ACTIVE.name() : snap.state().name(), now);

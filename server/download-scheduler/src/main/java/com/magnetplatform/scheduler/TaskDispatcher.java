@@ -1,6 +1,8 @@
 package com.magnetplatform.scheduler;
 
 import com.magnetplatform.application.TaskService;
+import io.micrometer.core.annotation.Counted;
+import io.micrometer.core.annotation.Timed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -26,6 +28,8 @@ public class TaskDispatcher {
         this.maxActivePerUser = maxActivePerUser;
     }
 
+    @Timed(value = "magnet_scheduler_tick_duration_seconds", histogram = true)
+    @Counted(value = "magnet_scheduler_ticks_total")
     @Scheduled(fixedDelayString = "${magnet.task.dispatch-delay-ms:2000}")
     public void tick() {
         try {
