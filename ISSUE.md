@@ -1,5 +1,14 @@
 # ISSUE.md — 已知问题与技术债
 
+## ✅ 已修复 | Compose 环境变量语法错误导致容器启动崩溃 (invalid interpolation format)
+- **发现日期**: 2026-10-23
+- **严重级**: 高
+- **现象**: 在 `infra` 目录执行 `docker compose up -d` 报错 `invalid interpolation format for services.aria2.environment.MAGNET_ARIA2_RPC_SECRET. You may need to escape any $ with another $. ${MAGNET_ARIA2_RPC_SECRET:155bba96a8223156e12979c304022ce8c0d6a3f48d3af605721fa1a949b705d7}`，Compose 预解析失败，所有服务无法启动。
+- **复现**: 在 `infra/docker-compose.yml` 中将环境变量写为 `${MAGNET_ARIA2_RPC_SECRET:secret}`（漏掉 `-`），执行 `docker compose up -d`。
+- **根因**: Compose 文件变量插值语法中提供默认值必须为 `${VAR:-default}`，漏掉 `-` 会导致 Compose 解析阶段语法报错；同时在 `infra` 目录下直接运行 Compose 时默认查找当前目录 `.env`，若无 `.env` 且写死密钥则既破坏语法又易导致密钥外泄进 Git。
+- **修复**: 还原 `infra/docker-compose.yml` 中规范的 `${MAGNET_ARIA2_RPC_SECRET:-}` 插值语法，并在 `infra/.env`（已被 `.gitignore` 忽略）中补齐本地持久化密钥；在 `infra` 目录下运行 `docker compose up -d` 基础服务与 `--profile http` 启动 aria2 均成功。
+- **验证**: `cd infra; docker compose up -d` 成功启动 mysql、redis、worker-1；`docker compose --profile http up -d aria2` 成功启动 aria2，JSON-RPC `aria2.getVersion` 返回 1.36.0；`mvn test` 170 项全绿，无跳过/失败；前端构建通过。
+
 ## ✅ 已修复 | P5 缺少真实物理 fencing 与可靠接管
 - **发现日期**: 2026-10-22
 - **严重级**: 高

@@ -171,7 +171,7 @@ python native/tests/test_ha.py
 - aria2 GID 格式：aria2 的 GID 必须为 16 位 16 进制小写字符，需从 `engineSessionId`（UUID）计算确定性 16 字符 hex 映射。
 - aria2 GID 缺失通过 HTTP 400 + JSON-RPC code 1 返回，不能在解析错误体前直接丢弃 HTTP 400。
 - MyBatis 有效租约检查排除 FAILED 会话；不能先把控制面会话置 FAILED，再试图在 withLease 内更新任务。
-- Compose `${VAR:?}` 即使 profile 未激活也会提前插值；HTTP 密钥改在 aria2 容器启动时检查，避免破坏 BT 启动。
+- Compose `${VAR:?}` 即使 profile 未激活也会提前插值；HTTP 密钥改在 aria2 容器启动时检查，避免破坏 BT 启动。变量插值默认值语法必须为 `${VAR:-default}`，遗漏连字符的 `${VAR:default}` 会在 Compose 语法解析阶段直接报错。`infra` 目录提供 `.gitignore` 保护的独立 `.env` 供直接在 infra 目录启动容器时读取密钥。
 - VPN/TUN 可能让测试源自动选出的宿主地址与容器网桥重叠，造成真实 aria2 测试 Connection refused；
   测试支持 `MAGNET_TEST_SOURCE_HOST` 显式指定可达 IPv4，生成的测试证书 SAN 同步使用该地址。
 
