@@ -78,13 +78,25 @@ mvn spring-boot:run
 API 默认监听端口 `8080`，健康探针与接口根路径 `/api/v1`。
 
 > **提示（传递 JVM 参数与网络代理）**：
-> 在本地开发时，若需要解析和探活处于代理网络环境下的境外资源（如境外图片、GitHub 发布包等），Java 原生客户端默认不读取环境变量中的 `HTTP_PROXY`/`HTTPS_PROXY`，可通过 `spring-boot.run.jvmArguments` 参数让 JVM 继承系统代理：
+> 在本地开发或打包运行环境下，若需要解析和探活处于代理网络环境下的境外资源（如境外图片、GitHub 发布包等），Java 原生客户端默认不读取环境变量中的 `HTTP_PROXY`/`HTTPS_PROXY`，可通过系统属性开启代理：
+>
+> **1. Maven 插件启动方式 (`spring-boot:run`)**：
 > ```powershell
 > # 让 JVM 自动读取系统代理设置：
 > mvn spring-boot:run "-Dspring-boot.run.jvmArguments=-Djava.net.useSystemProxies=true"
 >
 > # 或显式指定本地代理地址与端口（以 10808 为例）：
 > mvn spring-boot:run "-Dspring-boot.run.jvmArguments=-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=10808 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=10808"
+> ```
+>
+> **2. 打包后通过 `java -jar` 运行**：
+> > ⚠️ **注意**：`-D...` 等 JVM 参数**必须位于 `-jar` 之前**。若写在 `.jar` 之后会被当作应用入参传给 `main(String[] args)`，JVM 无法识别。
+> ```powershell
+> # 正确写法（JVM 参数置于 -jar 前面）：
+> java "-Djava.net.useSystemProxies=true" -jar download-api.jar
+>
+> # 显式代理写法：
+> java "-Dhttp.proxyHost=127.0.0.1" "-Dhttp.proxyPort=10808" "-Dhttps.proxyHost=127.0.0.1" "-Dhttps.proxyPort=10808" -jar download-api.jar
 > ```
 
 ### 3. 启动 React 前端 Web 服务
