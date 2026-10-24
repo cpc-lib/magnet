@@ -11,3 +11,5 @@ data/
 .codex/
 infra/.secrets/
 .secrets/
+benchmarks/data/
+benchmarks/results/*.json
