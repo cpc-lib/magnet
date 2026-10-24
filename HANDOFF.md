@@ -175,6 +175,8 @@ python native/tests/test_ha.py
 - VPN/TUN 可能让测试源自动选出的宿主地址与容器网桥重叠，造成真实 aria2 测试 Connection refused；
   测试支持 `MAGNET_TEST_SOURCE_HOST` 显式指定可达 IPv4，生成的测试证书 SAN 同步使用该地址。
 
+- HTTP 资源解析探活与 JVM 代理：Java 原生 `HttpClient` 默认不继承系统环境变量中的 `HTTP_PROXY`/`HTTPS_PROXY`，访问需走本地代理的境外或 CDN 资源时探活直接超时；开发环境启动 Spring Boot 时需传入 `-Djava.net.useSystemProxies=true` 以复用系统代理设置。
+
 ## 后续工作
 
 部署时先退出旧无 fencing Worker，再一起启动新协议 API/Worker。执行双机（非同宿主机）部署前
