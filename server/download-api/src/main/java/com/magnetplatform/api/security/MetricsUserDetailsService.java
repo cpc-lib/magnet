@@ -1,5 +1,7 @@
 package com.magnetplatform.api.security;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
@@ -11,9 +13,12 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.UUID;
 
 @Service
 public class MetricsUserDetailsService implements UserDetailsService {
+
+    private static final Logger log = LoggerFactory.getLogger(MetricsUserDetailsService.class);
 
     private final String username;
     private final String encodedPassword;
@@ -25,19 +30,38 @@ public class MetricsUserDetailsService implements UserDetailsService {
         this.encodedPassword = encoder.encode(rawPassword);
     }
 
+    private Path resolvePath(String filePath) {
+        Path path = Path.of(filePath);
+        if (Files.exists(path)) {
+            return path;
+        }
+        Path parent = Path.of("..").resolve(filePath);
+        if (Files.exists(parent)) {
+            return parent;
+        }
+        Path grandParent = Path.of("../..").resolve(filePath);
+        if (Files.exists(grandParent)) {
+            return grandParent;
+        }
+        return path;
+    }
+
     private String loadPassword(String filePath) {
         try {
-            Path path = Path.of(filePath);
+            Path path = resolvePath(filePath);
             if (!Files.exists(path)) {
-                throw new IllegalStateException("Metrics scrape password file does not exist: " + path.toAbsolutePath());
+                log.warn("Metrics scrape password file does not exist at {}. Basic Auth will fail closed.", path.toAbsolutePath());
+                return UUID.randomUUID().toString() + "-" + UUID.randomUUID().toString();
             }
             String content = Files.readString(path).trim();
             if (content.isBlank()) {
-                throw new IllegalStateException("Metrics scrape password file is blank: " + path.toAbsolutePath());
+                log.warn("Metrics scrape password file at {} is blank. Basic Auth will fail closed.", path.toAbsolutePath());
+                return UUID.randomUUID().toString() + "-" + UUID.randomUUID().toString();
             }
             return content;
         } catch (IOException e) {
-            throw new IllegalStateException("Failed to read metrics scrape password file: " + filePath, e);
+            log.warn("Failed to read metrics scrape password file at {}. Basic Auth will fail closed.", filePath, e);
+            return UUID.randomUUID().toString() + "-" + UUID.randomUUID().toString();
         }
     }
 

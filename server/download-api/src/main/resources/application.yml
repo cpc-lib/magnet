@@ -12,7 +12,9 @@ spring:
       - optional:file:../.env[.properties]
   # 本项目用无状态 JWT 认证，无需 Spring Boot 自动生成的内存用户（消除 generated security password 警告）
   autoconfigure:
-    exclude: org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+    exclude:
+      - org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+      - org.springframework.boot.actuate.autoconfigure.security.servlet.ManagementWebSecurityAutoConfiguration
   datasource:
     url: ${DB_URL:jdbc:mysql://localhost:3306/magnet?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=UTF-8}
     username: ${DB_USER:root}
