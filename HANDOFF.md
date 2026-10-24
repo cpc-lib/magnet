@@ -1,9 +1,10 @@
 # HANDOFF — Magnet Platform
 
-> 最后更新：2026-10-23。P0–P4 已交付；P5 同宿主机双 Worker 故障接管已实现；P6 多协议（HTTP/HTTPS 直链分段下载与 aria2 JSON-RPC 引擎集成）已交付。
+> 最后更新：2026-10-23。P0–P4 已交付；P5 同宿主机双 Worker 故障接管已实现；P6 多协议（HTTP/HTTPS 直链分段下载与 aria2 JSON-RPC 引擎集成）已交付；P7 监控与 Grafana 观测大盘（Prometheus scrape、Basic Auth 安全隔离、健康优先大盘）已交付。
 > 跨主机 fencing、宿主机/数据库/存储 HA、HTTP 入口负载均衡不在本次范围。
 > 历史提交：`99c1586`（P5 HA）、`7802b02`（SSE 补修）、`2dcad2b`（时间补修）。
 > P6 HTTP/HTTPS 实机补齐：`e0f754e`。
+> P7 监控与 Grafana 大盘：`4f7d332`、`68e165c`、`e86f018`、`6f7f7c6`、`5a8efdf`。
 > 2026-10-23 已将 `codex/p6-http-acceptance` 快进合并至本地 main（`6fd20fc`），无冲突、未推送。
 
 ## 当前状态与入口
@@ -18,6 +19,8 @@
 - P6 本轮用户确认仅 HTTP/HTTPS；实机补充设计/计划：
   `docs/superpowers/specs/2026-10-23-p6-http-acceptance-design.md`、
   `docs/superpowers/plans/2026-10-23-p6-http-acceptance.md`。FTP/Metalink 后续单列。
+- P7 已确认设计：`docs/superpowers/specs/2026-10-23-p7-monitoring-design.md`。
+- P7 实施计划：`docs/superpowers/plans/2026-10-23-p7-monitoring.md`。
 - 历史规格/计划保持原样；最新实现事实以本文件、README 和代码为准。
 
 ## 交付矩阵
@@ -31,20 +34,20 @@
 | P5 同机双 Worker | UTC 租约、Epoch、物理锁、失联停租、崩溃/冻结安全接管、重校验 | `TaskServiceTest`、`ApiIntegrationTest.expiredLeaseCannotRenewAndTakeoverRejectsOldOwner`、`GrpcLeaseTest`、`python native/tests/test_ha.py` |
 | P5 跨主机 | 未实现，需共享存储 fencing 方案 | 不宣称已交付 |
 | P6 多协议与 aria2 引擎 | HTTP/HTTPS 直链探活解析、分段下载、断点续传、aria2 JSON-RPC 2.0 引擎协议接入、单会话共享与统一 CAS 状态机 | `Aria2ClientTest`、`Aria2JsonRpcEngineTest`、`HttpProbeServiceTest`、`ParseServiceTest`、`TaskServiceTest`、`ApiIntegrationTest.httpUrlParseAndDownloadLifecycleWithAria2Engine` |
-| P7 监控与吞吐优化 | 未纳入本次范围 | 未开工 |
+| P7 监控与 Grafana 观测大盘 | 低基数 Prometheus 抓取端点（专用 Basic Auth 隔离与 fail-closed 密码文件）、Grafana 大盘 Provision（`Magnet Platform Overview`：健康优先首屏、任务分布、速率、耗时、Worker 与错误分布）、`monitoring` Compose profile | `MetricsEndpointIntegrationTest`、`MonitoringMetricsTest`、`docker compose -f infra/docker-compose.yml --profile monitoring config`、Prometheus `http://localhost:9090/-/ready`、Grafana `http://localhost:3000/api/health` 且数据源与大盘自动加载 |
 
 ## 本轮验证记录
 
-后端 `mvn test`：9 个 Maven 模块全部 SUCCESS，170 项测试，0 失败、0 错误、0 跳过。
+后端 `mvn test`：9 个 Maven 模块全部 SUCCESS，173 项测试，0 失败、0 错误、0 跳过。
 真实 MySQL 与 aria2 Docker API 集成测试已运行，未以缺少 Docker 为由跳过。
 
 | 模块 | 用例 |
 |---|---:|
 | download-domain | 38 |
-| download-application | 85（Auth 5 / Parse 17 / Task 31 / Export 6 / GC 6 / Probe 20） |
+| download-application | 88（Auth 5 / Parse 17 / Task 31 / Export 6 / GC 6 / Probe 20 / Monitoring 3） |
 | download-infrastructure | 8 |
 | download-engine-aria2 | 18（Aria2Client 5 / Aria2JsonRpcEngine 11 / 模式配置 2） |
-| download-api | 21（API 集成 5 / 真实 aria2 集成 3 / SSE 异常处理 9 / TCP 断连 1 / gRPC 租约协议 3） |
+| download-api | 24（API 集成 5 / 真实 aria2 集成 3 / SSE 异常处理 9 / TCP 断连 1 / gRPC 租约协议 3 / Metrics Auth 3） |
 
 前端：`cd web; npm run build`，TypeScript 检查和 Vite 生产构建成功。
 现有大 bundle 提示不影响构建；本轮未做 P7 性能重构。
@@ -123,6 +126,9 @@ python native/tests/test_ha.py
     可以执行。只有重新排队的任务启动才移除 error GID，保留部分文件重建下载；恢复扫描不偷偷重试。
 18. aria2 不负责删除宿主机文件；GC 在现有资源行锁和引用复核内，确认 daemon 停止后调用
     DownloadStorage 清理对应目录。移除失败保留候选；libtorrent 仍由 Worker 在物理锁内清理。
+19. Prometheus 抓取凭据与业务 JWT 严格隔离：暴露 `/actuator/prometheus`，采用专用 `@Order(1)` 过滤链及独立 Basic Auth 账号（`prometheus`），业务 JWT 链保持 `@Order(2)`；密码通过本地受忽略文件 `infra/.secrets/prometheus-scrape-password`（只读挂载至 Prometheus 容器）载入，不接受明文写死与环境变量注入泄漏。
+20. 监控安全 Fail-Closed 保证：`MetricsUserDetailsService` 在密码文件缺失或为空时，自动生成不可预测的高强度随机密码锁定端点，确保在任何未配置测试或意外环境下均拒绝未授权访问（返回 401），且不会破坏无需指标的单测/切片测试上下文。
+21. 低基数监控与单会话吞吐计量：全量指标遵循低基数原则，标签仅保留受控枚举（engine、status、result、reason、error_type），禁止任何任务 ID、用户 ID、URL 等高基数维度；下载/上传速率严格基于底层引擎会话聚合（多个任务共享同资源时仅单次采集），禁止将单物理流吞吐倍乘。
 
 ## 部署与边界
 
@@ -176,6 +182,9 @@ python native/tests/test_ha.py
   测试支持 `MAGNET_TEST_SOURCE_HOST` 显式指定可达 IPv4，生成的测试证书 SAN 同步使用该地址。
 
 - HTTP 资源解析探活与 JVM 代理：Java 原生 `HttpClient` 默认不继承系统环境变量中的 `HTTP_PROXY`/`HTTPS_PROXY`，访问需走本地代理的境外或 CDN 资源时探活直接超时；开发环境启动 Spring Boot 时需传入 `-Djava.net.useSystemProxies=true` 以复用系统代理设置。
+- Spring Boot 3.3.5 Actuator 暴露 Prometheus：需显式声明 `management.prometheus.metrics.export.enabled: true`，仅配置 `management.endpoints.web.exposure.include` 不足以激活 Prometheus 抓取端点映射。
+- Spring Boot Actuator 与特定安全切片测试排斥：引入 `spring-boot-starter-actuator` 后，若切片测试（如 `SseDisconnectIntegrationTest`）排除了 `SecurityAutoConfiguration`，需在 `application.yml` 全局排除 `ManagementWebSecurityAutoConfiguration`，否则容器启动时会因缺失 `HttpSecurity` 候选 Bean 报错；业务端点与 Prometheus 抓取端点通过 `@Order(1)` 和 `@Order(2)` 的自定义 `SecurityFilterChain` 进行严密控制。
+- MyBatis Record 映射与 SQL 聚合类型匹配：SQL `COUNT(*)` 聚合结果为 `java.lang.Long`，Record 构造器参数若仅有原始类型 `long`，MyBatis 在匹配构造函数反射时会抛出 `NoSuchMethodException`，Record 需显式提供接受包装类型 `Long` 的构造方法。
 
 ## 后续工作
 

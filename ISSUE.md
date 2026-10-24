@@ -74,6 +74,24 @@
 - **验证**: 容器 Running，已鉴权 JSON-RPC getVersion 返回 1.36.0，未鉴权请求被拒绝；两个配置文件密钥一致且被 Git 忽略，未输出或提交密钥。
 - **回归**: 本机启用真实 aria2 后，旧 Mock API 测试复现 COMPLETED/DOWNLOADING 断言失败；显式隔离后 `mvn test` 170 项全部通过，无失败/错误/跳过；`cd web; npm run build` 成功。现有 aria2 服务保持运行、重启计数 0。
 
+## ✅ 已修复 | Actuator 引入后排除 SecurityAutoConfiguration 的测试抛 HttpSecurity 依赖缺失
+- **发现日期**: 2026-10-23
+- **严重级**: 中
+- **现象**: 引入 `spring-boot-starter-actuator` 后，执行 `SseDisconnectIntegrationTest` 时报 `UnsatisfiedDependencyException: Error creating bean with name 'managementSecurityFilterChain' ... No qualifying bean of type 'HttpSecurity' available`，应用上下文加载失败。
+- **复现**: 在包含 Actuator 的依赖下，运行排除了 `SecurityAutoConfiguration` 的 Spring Boot 测试。
+- **根因**: Spring Boot Actuator 的 `ManagementWebSecurityAutoConfiguration` 在检测到 Spring Security 在类路径时自动尝试注入 `HttpSecurity`；而测试由于排除了 `SecurityAutoConfiguration`，导致容器内没有 `HttpSecurity` Bean。
+- **修复**: commit `5a8efdf`；在 `application.yml` 中显式排除 `ManagementWebSecurityAutoConfiguration`。项目本身的 Prometheus 抓取端点由 `@Order(1)` 的自定义 `metricsSecurityFilterChain` 严密保护，无需 Actuator 默认安全过滤器链。
+- **验证**: `mvn -pl server/download-api -am -Dtest=SseDisconnectIntegrationTest test` 成功通过，全量 `mvn test` 173 项测试全部通过。
+
+## ✅ 已修复 | MyBatis Record 构造器在 COUNT(*) 映射时抛 NoSuchMethodException
+- **发现日期**: 2026-10-23
+- **严重级**: 中
+- **现象**: 调度 tick 执行按状态聚合任务统计 SQL 时，MyBatis 抛出 `ReflectionException: Error instantiating class com.magnetplatform.application.TaskStatusEngineCount with invalid types (..., Long) or values ... Cause: java.lang.NoSuchMethodException`。
+- **复现**: 在带有聚合查询结果的数据库上调用 `DownloadTaskRepository.countByStatusAndEngine()`。
+- **根因**: SQL `COUNT(*)` 返回 `java.lang.Long`，而 Java Record `TaskStatusEngineCount` 仅声明了原始类型 `long`，MyBatis 反射寻找构造函数时无法将 `java.lang.Long` 自动开箱为 `long` 匹配构造器签名。
+- **修复**: commit `e86f018`；在 `TaskStatusEngineCount` Record 中将字段调整为 `Long` 并提供重载构造器，Mapper XML 显式声明 `javaType="java.lang.Long"`。
+- **验证**: `TaskServiceTest`、`MetricsEndpointIntegrationTest` 与全量测试均成功执行聚合查询，0 失败。
+
 ## 范围边界
 
 P5 仅实现同宿主机 Worker 进程/容器 HA。跨主机、宿主机/数据库/存储 HA 与 HTTP 入口切换未实现，
