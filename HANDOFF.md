@@ -143,6 +143,12 @@ python native/tests/test_ha.py
   修复记录 `e6c4b30`；设置 `MAGNET_TEST_SOURCE_HOST` 为当前可达宿主 IPv4 后运行 `mvn test`：
   170 项全部通过，无跳过（含真实 aria2 3 项）；`cd web; npm run build` 成功。
 - HTTP/HTTPS 资源需正的已知大小，不支持空文件/未知大小流、认证直链或自定义请求头；拒绝不安全文件名。
+- aria2 Compose 启动需要持久 RPC 密钥：保存根目录 `.env`，API 子模块 `.env` 存在时使用相同密钥。
+  仅在临时 PowerShell 窗口设置变量会遗漏后续启动配置；更新后用带 `--env-file .env` 的 Compose 命令重新创建 aria2。
+  2026-10-23 已为本机生成并同步密钥、启用 HTTP RPC，仅启动 aria2 服务；带鉴权 getVersion 返回 1.36.0，
+  未鉴权请求被拒绝。API 需在重启后读取新 `.env`，本轮未中断 API 或其他服务。
+  修复提交 `ac9843e`；本机启用真实引擎后 API 测试须显式隔离 Mock/RPC 模式与密钥。
+  修复前复现 Mock 完成断言失败，修复后 `mvn test` 170 项全部通过，无跳过；前端构建成功。
 
 ## 技术陷阱
 

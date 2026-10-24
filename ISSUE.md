@@ -55,6 +55,16 @@
 - **验证**: `docker image inspect magnet-aria2:latest` 成功，镜像 ID `sha256:e133cca40e01d5df61a0c8a828d3636cb679f5c6b4f09a44c16f6154d82a49e8`；无网络临时容器 `--version` 成功，aria2 1.36.0 支持 HTTPS。
 - **回归**: 指定当前可达宿主 IPv4 后 `mvn test` 170 项全部通过，0 失败/错误/跳过；真实 aria2 3 项通过（87.92 秒）；`cd web; npm run build` 成功。未修改系统网络、应用代理或证书验证。
 
+## ✅ 已修复 | aria2 镜像已构建但容器启动后反复退出
+- **发现日期**: 2026-10-23
+- **严重级**: 高
+- **现象**: Compose 创建 aria2 后容器 Restarting，日志 `MAGNET_ARIA2_RPC_SECRET: Set MAGNET_ARIA2_RPC_SECRET before starting aria2`。
+- **复现**: 本机 `.env` 未配置 RPC 密钥时执行 `docker compose -f infra/docker-compose.yml --profile http up -d --no-build --no-deps aria2`。
+- **根因**: 之前仅验证二进制版本，未验证 Compose 带鉴权的实际启动；文档依赖临时进程环境变量，本机根目录与 API 子模块 `.env` 均缺少 RPC 配置。
+- **修复**: `ac9843e`：本机生成随机 RPC 密钥并同步两个已忽略的 `.env`，仅重新创建/启动 aria2；README 改为持久化配置与显式 env-file，`.env.example` 补充 aria2 配置项。API Mock 测试显式关闭真实 RPC，真实 daemon 测试显式关闭 Mock 并清空本地密钥继承，避免启用本机服务后污染测试。
+- **验证**: 容器 Running，已鉴权 JSON-RPC getVersion 返回 1.36.0，未鉴权请求被拒绝；两个配置文件密钥一致且被 Git 忽略，未输出或提交密钥。
+- **回归**: 本机启用真实 aria2 后，旧 Mock API 测试复现 COMPLETED/DOWNLOADING 断言失败；显式隔离后 `mvn test` 170 项全部通过，无失败/错误/跳过；`cd web; npm run build` 成功。现有 aria2 服务保持运行、重启计数 0。
+
 ## 范围边界
 
 P5 仅实现同宿主机 Worker 进程/容器 HA。跨主机、宿主机/数据库/存储 HA 与 HTTP 入口切换未实现，
